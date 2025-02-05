@@ -1,54 +1,63 @@
+"use client";
+
 import React from 'react';
 
-export default function Page() {
-    const canvasRef = React.useRef<HTMLCanvasElement>(null);
-    const [ws, setWs] = React.useState<WebSocket | null>(null);
+const streamURL = 'https://synema.cxllmerichie.com/proxy/11c92a546075985695d11d4a7dbec3e3:2025020619:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydHNRa3Y2R053b3h5cGFDd21VYlUvaGc9PQ==/2/4/8/6/2/3/i8dqz.mp4:hls:manifest.m3u8';
+
+const Page: React.FC<{}> = ({}) => {
+    const canvasRef = React.useRef(null);
+    const [ws, setWs] = React.useState(null);
 
     React.useEffect(() => {
-        const newWs = new WebSocket('ws://localhost:3001/ws');
-        newWs.binaryType = 'arraybuffer';
+        // Connect to Media Server
+        const ws = new WebSocket(`ws://127.0.0.1:8080/${btoa(streamURL)}`);
+        setWs(ws);
 
-        newWs.onmessage = (event) => {
+        // Initialize canvas context
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+
+        // Handle incoming JPEG frames
+        ws.onmessage = (event) => {
             const blob = new Blob([event.data], {type: 'image/jpeg'});
             const url = URL.createObjectURL(blob);
             const img = new Image();
 
+            console.log(event)
             img.onload = () => {
-                const ctx = canvasRef.current?.getContext('2d');
-                if (ctx) {
-                    ctx.drawImage(img, 0, 0, ctx.canvas.width, ctx.canvas.height);
-                }
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 URL.revokeObjectURL(url);
             };
 
             img.src = url;
         };
 
-        setWs(newWs);
-        return () => newWs.close();
+        // Send player events
+        const sendEvent = (type, value) => {
+            ws.send(JSON.stringify({
+                type,
+                ...(value !== undefined && {value})
+            }));
+        };
+
+        // Attach event listeners for play/pause/seek
+        canvas.addEventListener('click', () => {
+            sendEvent('play');
+        });
+
+        return () => {
+            ws.close();
+        };
     }, []);
 
-    const sendCommand = async (command: string) => {
-        await fetch(`http://localhost:3001/${command}`, {method: 'POST'});
-    };
-
-    const seek = async (time: number) => {
-        await fetch(`http://localhost:3001/seek?time=${time}`, {method: 'POST'});
-    };
-
     return (
-        <div>
-            <canvas
-                ref={canvasRef}
-                width="1280"
-                height="720"
-                style={{border: '1px solid black'}}
-            />
-            <div>
-                <button onClick={() => sendCommand('play')}>Play</button>
-                <button onClick={() => sendCommand('pause')}>Pause</button>
-                <button onClick={() => seek(30)}>Seek to 30s</button>
-            </div>
-        </div>
+        <canvas
+            ref={canvasRef}
+            width="1280"
+            height="720"
+            className={'border'}
+        />
     );
 }
+
+export default Page;
