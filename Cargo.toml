@@ -10,3 +10,4 @@ serde = { version = "1.0.217" }
 ffmpeg-next = { version = "7.1.0" }
 actix-web = "4.9.0"
 image = "0.25.5"
+hyper = "1.6.0"
