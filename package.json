@@ -1,0 +1,25 @@
+{
+  "name": "transtream",
+  "version": "1.0.0",
+  "description": "[manifest.m3u8](https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8)",
+  "homepage": "https://github.com/cxllmerichie/transtream#readme",
+  "bugs": {
+    "url": "https://github.com/cxllmerichie/transtream/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cxllmerichie/transtream.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "log-timestamp": "^0.3.0"
+  }
+}
