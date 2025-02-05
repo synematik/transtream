@@ -1,0 +1,18 @@
+<html>
+<body>
+<video id="video" autoplay></video>
+<script>
+    const video = document.getElementById("video");
+    const ws = new WebSocket("ws://localhost:8080");
+    ws.binaryType = "arraybuffer";
+
+    let mediaSource = new MediaSource();
+    video.src = URL.createObjectURL(mediaSource);
+
+    mediaSource.addEventListener("sourceopen", () => {
+        let sourceBuffer = mediaSource.addSourceBuffer('video/mp2t; codecs="avc1.42E01E, mp4a.40.2"');
+        ws.onmessage = (event) => sourceBuffer.appendBuffer(event.data);
+    });
+</script>
+</body>
+</html>
