@@ -10,7 +10,7 @@ ffmpeg -re -stream_loop -1 -i file.ts -c copy -f rtsp rtsp://localhost:8554/myst
 #### .ts
 ffmpeg -re -stream_loop -1 -i video.ts -c copy -f rtsp rtsp://localhost:8554/mystream
 #### [WORKS] ffmpeg .mp4 -> rtsp 
-ffmpeg -re -stream_loop -1 -i video.mp4 -c copy -f rtsp rtsp://localhost:8554/mystream
+ffmpeg -re -stream_loop -1 -i "sources/video.mp4" -c copy -f rtsp rtsp://localhost:8554/mystream
 
 ffmpeg -re -i video.mp4 -c copy -f rtsp rtsp://localhost:8554/mystream
 #### .m3u8
