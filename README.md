@@ -1,33 +1,89 @@
-[manifest.m3u8](https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8)
+# RTSPtoWebRTC
 
-# RTMP
-1. [RTMP](https://hub.docker.com/r/tiangolo/nginx-rtmp/)
-2. ffmpeg -re -i "https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8" -vf scale=1280:960 -vcodec libx264 -profile:v baseline -pix_fmt yuv420p -f flv rtmp://127.0.0.1/live/streamid
-3. [RTMP2HLS](https://stackoverflow.com/questions/19658216/how-can-we-transcode-live-rtmp-stream-to-live-hls-stream-using-ffmpeg)
+RTSP Stream to WebBrowser over WebRTC based on Pion (full native! not using ffmpeg or gstreamer).
 
-# WebSocket
-ffmpeg -re -i "https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8" -c:v libx264 -preset ultrafast -tune zerolatency -c:a aac -f mpegts "ws://localhost:8080"
+**Note:** [RTSPtoWeb](https://github.com/deepch/RTSPtoWeb) is an improved service that provides the same functionality, an improved API, and supports even more protocols. *RTSPtoWeb is recommended over using this service.*
 
-# RTSP [docker](https://github.com/bluenviron/mediamtx?tab=readme-ov-file#ffmpeg)
-1. docker run --rm -it --network=host bluenviron/mediamtx:latest
+
+if you need RTSPtoWSMP4f use https://github.com/deepch/RTSPtoWSMP4f
+
+
+![RTSPtoWebRTC image](doc/demo4.png)
+
+### Download Source
+
+1. Download source
+   ```bash 
+   $ git clone https://github.com/deepch/RTSPtoWebRTC  
+   ```
+3. CD to Directory
+   ```bash
+    $ cd RTSPtoWebRTC/
+   ```
+4. Test Run
+   ```bash
+    $ GO111MODULE=on go run *.go
+   ```
+5. Open Browser
+    ```bash
+    open web browser http://127.0.0.1:8083 work chrome, safari, firefox
     ```
-    docker run --rm -it \
-    -e MTX_RTSPTRANSPORTS=tcp \
-    -e MTX_WEBRTCADDITIONALHOSTS=192.168.x.x \
-    -p 8554:8554 \
-    -p 1935:1935 \
-    -p 8888:8888 \
-    -p 8889:8889 \
-    -p 8890:8890/udp \
-    -p 8189:8189/udp \
-    bluenviron/mediamtx 
-    ```
-2. ffmpeg -re -stream_loop -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8 -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/stream
 
-ffmpeg -re -listen -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8 -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/stream
+## Configuration
 
-# FFPLAY
-1. ffplay -rtsp_transport tcp rtsp://localhost:8554/stream
+### Edit file config.json
 
-# BBOX
-docker run -e UDP_MUX_PORT=8080 -e NAT_1_TO_1_IP=127.0.0.1 -p 8080:8080 -p 8080:8080/udp seaduboi/broadcast-box
+format:
+
+```bash
+{
+  "server": {
+    "http_port": ":8083"
+  },
+  "streams": {
+    "demo1": {
+      "on_demand" : false,
+      "url": "rtsp://170.93.143.139/rtplive/470011e600ef003a004ee33696235daa"
+    },
+    "demo2": {
+      "on_demand" : true,
+      "url": "rtsp://admin:admin123@10.128.18.224/mpeg4"
+    },
+    "demo3": {
+      "on_demand" : false,
+      "url": "rtsp://170.93.143.139/rtplive/470011e600ef003a004ee33696235daa"
+    }
+  }
+}
+```
+
+## Livestreams
+
+Use option ``` "on_demand": false ``` otherwise you will get choppy jerky streams and performance issues when multiple clients connect. 
+
+## Limitations
+
+Video Codecs Supported: H264
+
+Audio Codecs Supported: pcm alaw and pcm mulaw 
+
+## Team
+
+Deepch - https://github.com/deepch streaming developer
+
+Dmitry - https://github.com/vdalex25 web developer
+
+Now test work on (chrome, safari, firefox) no MAC OS
+
+## Other Example
+
+Examples of working with video on golang
+
+- [RTSPtoWeb](https://github.com/deepch/RTSPtoWeb)
+- [RTSPtoWebRTC](https://github.com/deepch/RTSPtoWebRTC)
+- [RTSPtoWSMP4f](https://github.com/deepch/RTSPtoWSMP4f)
+- [RTSPtoImage](https://github.com/deepch/RTSPtoImage)
+- [RTSPtoHLS](https://github.com/deepch/RTSPtoHLS)
+- [RTSPtoHLSLL](https://github.com/deepch/RTSPtoHLSLL)
+
+[![paypal.me/AndreySemochkin](https://ionicabizau.github.io/badges/paypal.svg)](https://www.paypal.me/AndreySemochkin) - You can make one-time donations via PayPal. I'll probably buy a ~~coffee~~ tea. :tea:
