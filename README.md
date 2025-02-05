@@ -22,7 +22,9 @@ ffmpeg -re -i "https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a987
     -p 8189:8189/udp \
     bluenviron/mediamtx 
     ```
-2. ffmpeg -re -stream_loop -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8 -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/stream
+2. ffmpeg -re -stream_loop -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8 -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/mystream
+
+ffmpeg -re -stream_loop -1 -i file.ts -c copy -f rtsp rtsp://localhost:8554/mystream
 
 ffmpeg -re -listen -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8 -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/stream
 
