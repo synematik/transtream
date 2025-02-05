@@ -26,17 +26,16 @@ struct Movie {
 
 pub struct ApiService {
     config: SharedCfg,
-    db: SharedDb,
     router: Router,
 }
 
 impl ApiService {
-    fn new(db: SharedDb, config: SharedCfg) -> ApiService {
+    fn new(config: SharedCfg) -> ApiService {
         let mut router = Router::new();
         router.add(Route::get(r"/movies/(\d+)").name("get_movie"));
         router.add(Route::get("/movies/").name("get_movies"));
         router.add(Route::get(r"/stream/(\d+)").name("get_stream"));
-        ApiService { config, db, router }
+        ApiService { config, router }
     }
 }
 
@@ -71,35 +70,5 @@ impl Service<Request<Body>> for ApiService {
         }
 
         Box::pin(async { Ok(Response::builder().body(Body::from("Not Found")).unwrap()) })
-    }
-}
-
-pub struct MakeApiSvc {
-    config: SharedCfg,
-    db: SharedDb,
-}
-
-impl MakeApiSvc {
-    pub fn new(config: SharedCfg, db: SharedDb) -> MakeApiSvc {
-        MakeApiSvc { config, db }
-    }
-}
-
-impl<T> Service<T> for MakeApiSvc {
-    type Response = ApiService;
-    type Error = hyper::Error;
-    type Future = FuturePin<Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-    fn call(&mut self, _: T) -> Self::Future {
-        let config = self.config.clone();
-        let db = self.db.clone();
-
-        // routes
-
-        let fut = async move { Ok(ApiService::new(db, config)) };
-        Box::pin(fut)
     }
 }
