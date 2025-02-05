@@ -1,34 +1,33 @@
-This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+[manifest.m3u8](https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8)
 
-## Getting Started
+# RTMP
+1. [RTMP](https://hub.docker.com/r/tiangolo/nginx-rtmp/)
+2. ffmpeg -re -i "https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8" -vf scale=1280:960 -vcodec libx264 -profile:v baseline -pix_fmt yuv420p -f flv rtmp://127.0.0.1/live/streamid
+3. [RTMP2HLS](https://stackoverflow.com/questions/19658216/how-can-we-transcode-live-rtmp-stream-to-live-hls-stream-using-ffmpeg)
 
-First, run the development server:
+# WebSocket
+ffmpeg -re -i "https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8" -c:v libx264 -preset ultrafast -tune zerolatency -c:a aac -f mpegts "ws://localhost:8080"
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-```
+# RTSP [docker](https://github.com/bluenviron/mediamtx?tab=readme-ov-file#ffmpeg)
+1. docker run --rm -it --network=host bluenviron/mediamtx:latest
+    ```
+    docker run --rm -it \
+    -e MTX_RTSPTRANSPORTS=tcp \
+    -e MTX_WEBRTCADDITIONALHOSTS=192.168.x.x \
+    -p 8554:8554 \
+    -p 1935:1935 \
+    -p 8888:8888 \
+    -p 8889:8889 \
+    -p 8890:8890/udp \
+    -p 8189:8189/udp \
+    bluenviron/mediamtx 
+    ```
+2. ffmpeg -re -stream_loop -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8 -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/stream
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+ffmpeg -re -listen -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d110f8a0a98737443:2025020601:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFJuRVplSE9qeTA1Zmx3anhPRG4rOHc9PQ==/2/4/8/6/0/4/f0yob.mp4:hls:manifest.m3u8 -c copy -f rtsp -rtsp_transport tcp rtsp://localhost:8554/stream
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+# FFPLAY
+1. ffplay -rtsp_transport tcp rtsp://localhost:8554/stream
 
-This project uses [`next/font`](https://nextjs.org/docs/basic-features/font-optimization) to automatically optimize and load Inter, a custom Google Font.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
+# BBOX
+docker run -e UDP_MUX_PORT=8080 -e NAT_1_TO_1_IP=127.0.0.1 -p 8080:8080 -p 8080:8080/udp seaduboi/broadcast-box
