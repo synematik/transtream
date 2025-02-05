@@ -1,0 +1,10 @@
+[package]
+name = "ffmpeg"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.43.0", features = ["full"] }
+axum = { version = "0.8.1" }
+serde = { version = "1.0.217" }
+ffmpeg-next = { version = "7.1.0" }
