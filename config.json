@@ -6,8 +6,7 @@
   "streams": {
     "H264_AAC": {
       "on_demand": false,
-      "disable_audio": true,
-      "url": "rtsp://admin:admin@176.117.205.3:5541/video1"
+      "url": "rtsp://localhost:8554/stream"
     }
   }
 }
