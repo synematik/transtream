@@ -1,118 +1,57 @@
-use axum::{Router, Extension, response::IntoResponse};
-use axum::http::StatusCode;
-use ffmpeg_next::{codec, format, media, packet, software, util};
-use std::sync::{Arc, RwLock};
-use tokio::sync::RwLock as TokioRwLock;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use ffmpeg_next::{codec, format, media, software, packet, error};
+use std::fs::File;
+use std::io::{self, Read};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum StreamState {
-    Play,
-    Pause,
-}
+async fn stream_video() -> impl Responder {
+    // Open the video file using ffmpeg-next
+    let file_path = "video.mp4";
+    let mut input = format::input(file_path).unwrap();
 
-struct Gateway {
-    state: Arc<TokioRwLock<StreamState>>,
-    video_decoder: Option<ffmpeg_next::decoder::Video>,
-}
+    // Initialize the decoder (video stream)
+    let mut stream = input.streams().best(media::Type::Video).unwrap();
+    let decoder = codec::context::Context::from_stream(&stream).unwrap();
+    let mut decoder = software::decoder::Video::new(decoder).unwrap();
 
-impl Gateway {
-    fn new() -> Self {
-        Gateway {
-            state: Arc::new(TokioRwLock::new(StreamState::Play)),
-            video_decoder: None,
-        }
-    }
+    // Prepare for reading the video frames
+    let mut packet = packet::Packet::empty();
+    let mut frame_buffer = Vec::new();
 
-    async fn set_state(&self, state: StreamState) {
-        let mut lock = self.state.write().await;
-        *lock = state;
-    }
+    // Create an HTTP response stream
+    let response = HttpResponse::Ok()
+        .content_type("image/jpeg") // Sending frames as JPEG images
+        .streaming();
 
-    async fn get_state(&self) -> StreamState {
-        let lock = self.state.read().await;
-        *lock
-    }
+    let mut res_stream = response.await?;
 
-    // Initializes FFmpeg for decoding
-    async fn init_ffmpeg(&mut self) -> Result<(), String> {
-        ffmpeg_next::init().map_err(|e| format!("Failed to initialize FFmpeg: {}", e))?;
+    // Read frames and send them one by one
+    while let Ok(true) = input.read_packet(&mut packet) {
+        if packet.stream() == stream.index() {
+            // Decode the video frame
+            if let Ok(frame) = decoder.decode(&packet) {
+                frame_buffer.clear();
 
-        // Open input file (could also be a stream)
-        let mut context = format::input(&"input_video.mp4").map_err(|e| format!("Failed to open input: {}", e))?;
+                // Convert the frame to JPEG (or any other format you want)
+                let mut jpg_encoder = image::jpeg::JPEGEncoder::new(&mut frame_buffer);
+                jpg_encoder.encode(&frame.data(0), frame.width() as u32, frame.height() as u32, image::ColorType::Rgb8).unwrap();
 
-        // Find the video stream (assuming one video stream in the file)
-        let input_stream = context.streams().best(media::Type::Video).ok_or("No video stream found")?;
-        let codec = input_stream.codec().decoder().video().ok_or("Failed to find video decoder")?;
-
-        self.video_decoder = Some(codec);
-
-        Ok(())
-    }
-
-    // Handles streaming video frames
-    async fn stream_video(&self, response: axum::response::Response) {
-        // Get the state of the stream
-        let state = self.get_state().await;
-
-        if state == StreamState::Play {
-            // Decode and stream the frames
-            if let Some(decoder) = &self.video_decoder {
-                let mut packet = packet::Packet::empty();
-                while decoder.decode(&mut packet).is_ok() {
-                    if packet.is_empty() {
-                        continue;
-                    }
-
-                    // You can process the frame here if needed, e.g., scale or modify it
-                    // Send the decoded frame to the client
-                    let frame = decoder.decode_packet(&packet);
-                    if let Ok(frame) = frame {
-                        // Send the frame to the HTTP stream
-                        let buffer = frame.data();
-                        response.write_all(&buffer).await.unwrap();
-                    }
-                }
+                // Send the JPEG frame
+                res_stream.send_data(frame_buffer.clone()).await.unwrap();
             }
-        } else {
-            println!("Stream is paused. Holding frames.");
         }
     }
+
+    res_stream.await?;
+    HttpResponse::Ok().finish() // Close connection after streaming is done
 }
 
-// API endpoint to control pause/play state
-async fn play(Extension(gateway): Extension<Gateway>) -> StatusCode {
-    gateway.set_state(StreamState::Play).await;
-    StatusCode::OK
-}
-
-async fn pause(Extension(gateway): Extension<Gateway>) -> StatusCode {
-    gateway.set_state(StreamState::Pause).await;
-    StatusCode::OK
-}
-
-#[tokio::main]
-async fn main() {
-    let gateway = Gateway::new();
-
-    // Initialize FFmpeg decoder
-    match gateway.init_ffmpeg().await {
-        Ok(()) => println!("FFmpeg initialized successfully"),
-        Err(e) => panic!("Error initializing FFmpeg: {}", e),
-    }
-
-    // Set up Axum server
-    let app = Router::new()
-        .route("/api/control/play", axum::routing::get(play))
-        .route("/api/control/pause", axum::routing::get(pause))
-        .route("/stream", axum::routing::get(move || {
-            gateway.stream_video(); // Start streaming frames
-            StatusCode::OK
-        }))
-        .layer(Extension(gateway));
-
-    axum::Server::bind(&"0.0.0.0:8000".parse().unwrap())
-        .serve(app.into_make_service())
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new()
+            .route("/video", web::get().to(stream_video)) // Stream video on /video endpoint
+    })
+        .bind("127.0.0.1:8080")?
+        .run()
         .await
-        .unwrap();
 }
