@@ -28,3 +28,6 @@ ffmpeg -re -listen -1 -i https://synema.cxllmerichie.com/proxy/0c56f96f6f49434d1
 
 # FFPLAY
 1. ffplay -rtsp_transport tcp rtsp://localhost:8554/stream
+
+# BBOX
+docker run -e UDP_MUX_PORT=8080 -e NAT_1_TO_1_IP=127.0.0.1 -p 8080:8080 -p 8080:8080/udp seaduboi/broadcast-box
