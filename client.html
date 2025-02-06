@@ -3,6 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>transtream</title>
+    <style>
+        /*video::-webkit-media-controls-volume-slider*/
+        /*, video::-webkit-media-controls-mute-button*/
+        /*, video::-webkit-media-controls-play-button*/
+        /*, video::-webkit-media-controls-fullscreen-button*/
+        /*,*/
+        video::-webkit-media-controls-current-time-display
+        , video::-webkit-media-controls-time-remaining-display
+        , video::-webkit-media-controls-seek-back-button
+        , video::-webkit-media-controls-seek-forward-button
+        , video::-webkit-media-controls-toggle-closed-captions-button
+        {
+            display:none;
+        }
+    </style>
 </head>
 <body style="margin: 0; padding: 0; background-color: black; display: flex; align-items: center; justify-content: center; height: 100vh; width:100vw;">
 <video
@@ -13,6 +29,9 @@
     muted
     autoplay
     controls
+    controlsList="nodownload noremoteplayback noplaybackrate"
+    disablePictureInPicture
+    disableRemotePlayback
 />
 </body>
 </html>
