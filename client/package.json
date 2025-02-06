@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "nightly": "next dev --turbopack --hostname 127.0.0.1 --port 8443 --experimental-https",
+    "nightly": "next dev --turbopack --hostname 0.0.0.0 --port 8080",
     "build": "next build",
-    "start": "next start"
+    "start": "next start --hostname 0.0.0.0 --port 8080"
   },
   "dependencies": {
     "react": "^19.0.0",

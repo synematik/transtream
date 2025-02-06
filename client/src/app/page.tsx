@@ -2,10 +2,12 @@
 
 import React from "react";
 
+import {env} from "~/lib";
+
 const Page: React.FC<{}> = ({}) => {
     async function onState(event: React.SyntheticEvent<HTMLVideoElement>): Promise<void> {
         const video: HTMLVideoElement = event.currentTarget || event.target;
-        await fetch("http://127.0.0.1:8080/state", {
+        await fetch(`${env.API.BASE_URL}/state`, {
             method: "POST",
             body: JSON.stringify({
                 state: !video.paused,
@@ -20,7 +22,7 @@ const Page: React.FC<{}> = ({}) => {
 
     return (
         <video
-            src='http://127.0.0.1:8080'
+            src={env.API.BASE_URL}
             className={'w-full h-full'}
             muted
             autoPlay

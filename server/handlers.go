@@ -9,7 +9,7 @@ import (
 )
 
 func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("Client connected.")
+	log.Println("[StreamHandler] connected")
 
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Transfer-Encoding", "chunked")
@@ -20,7 +20,7 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		http.Error(w, "HTTP keep-alive streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 	pr := s.AddClient() // Each client gets its own pipe reader

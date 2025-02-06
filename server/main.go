@@ -17,7 +17,6 @@ func main() {
 	router.HandleFunc("/", state.StreamHandler).Methods("GET")
 	router.HandleFunc("/state", state.StateHandler).Methods("GET")
 
-	addr := "127.0.0.1:8080"
-	log.Println("Serving: http://" + addr)
-	log.Fatal(http.ListenAndServe(addr, router))
+	log.Println("Serving: http://" + Address)
+	log.Fatal(http.ListenAndServe(Address, router))
 }
