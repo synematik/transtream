@@ -2,11 +2,9 @@ package main
 
 import (
 	"bufio"
-	//"fmt"
 	"io"
 	"log"
 	"net/http"
-	//"time"
 
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
@@ -14,6 +12,9 @@ import (
 const input string = "https://synema.cxllmerichie.com/proxy/6e0589342c84c1e468c6442bad7cfbf4:2025020707:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFFtS2lSRGZTTC9RQVdRRjBzNzNtanc9PQ==/2/4/8/7/3/5/brh53.mp4:hls:manifest.m3u8"
 
 func stream(w http.ResponseWriter, r *http.Request) {
+	//	w.Header().Set("Content-Type", "application/octet-stream")
+	//	w.Header().Set("X-Content-Type-Options", "nosniff")
+
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Transfer-Encoding", "chunked")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -26,7 +27,6 @@ func stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a pipe for streaming FFmpeg output
 	pr, pw := io.Pipe()
 
 	// Start FFmpeg process
@@ -34,6 +34,7 @@ func stream(w http.ResponseWriter, r *http.Request) {
 		err := ffmpeg.
 			Input(input).
 			Output("pipe:1", ffmpeg.KwArgs{
+				//				"listen":   "1",
 				"f":        "mp4",
 				"vcodec":   "libx264",
 				"preset":   "ultrafast",
@@ -80,59 +81,10 @@ func stream(w http.ResponseWriter, r *http.Request) {
 	pr.Close()
 }
 
-//func stream(w http.ResponseWriter, r *http.Request) {
-//	flusher, ok := w.(http.Flusher)
-//	if !ok {
-//		panic("expected http.ResponseWriter to be an http.Flusher")
-//	}
-//
-//	w.Header().Set("Transfer-Encoding", "chunked")
-//	w.Header().Set("Content-Type", "application/octet-stream")
-//	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-//	w.Header().Set("Connection", "keep-alive")
-//	w.Header().Set("Access-Control-Allow-Origin", "*")
-//	w.Header().Set("X-Content-Type-Options", "nosniff")
-//	for i := 1; i <= 10; i++ {
-//		fmt.Fprintf(w, "Chunk #%d\n", i)
-//		flusher.Flush() // Trigger "chunked" encoding and send a chunk...
-//		time.Sleep(500 * time.Millisecond)
-//	}
-//
-//
-//	pr, pw := io.Pipe()
-//
-//	go func() {
-//		err := ffmpeg.
-//			Input(input).
-//			Output("pipe", ffmpeg.KwArgs{
-//				"listen":   "1",
-//				"filter:v": "fps=60",
-//				"f":        "mp4",
-//				"preset":   "ultrafast",
-//				"vcodec":   "libx264",
-//				"tune":     "zerolatency",
-//				"movflags": "frag_keyframe+empty_moov+faststart",
-//			}).
-//			WithOutput(pw).
-//			Run()
-//
-//		if err != nil {
-//			log.Println("FFmpeg error:", err)
-//		}
-//		pw.Close()
-//	}()
-//
-//	_, err := io.Copy(w, pr)
-//	if err != nil {
-//		log.Println("Failed to stream video:", err)
-//		http.Error(w, "Failed to stream video", http.StatusInternalServerError)
-//	}
-//}
-
 func main() {
 	http.HandleFunc("/", stream)
 
-	addr := "127.0.0.1:8000"
+	addr := "127.0.0.1:8080"
 	log.Println("Serving at: http://" + addr)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
