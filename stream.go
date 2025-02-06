@@ -104,7 +104,6 @@ func (s *Stream) Play() {
 
 	if cmd := s.FFmpegCmd.Process; cmd != nil {
 		cmd.Signal(syscall.SIGCONT)
-		//cmd.Signal(os.Signal(0x12))
 	}
 
 	s.startTime = time.Now().Add(-time.Duration(s.Position * float64(time.Second)))
