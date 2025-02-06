@@ -10,7 +10,7 @@ type State struct {
 	active bool
 }
 
-func NewSharedState() *State {
+func NewState() *State {
 	return &State{
 		//streams: make(map[string]*io.PipeReader),
 		active: true,

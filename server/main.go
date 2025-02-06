@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	state := NewSharedState()
+	state := NewState()
 
 	router := mux.NewRouter()
 	router.Use(LoggingMiddleware)
@@ -17,7 +17,7 @@ func main() {
 	router.HandleFunc("/state", state.StateHandler).
 		Methods("POST")
 
-	addr := "127.0.0.1:8080" //"192.168.137.137:8080"
+	addr := "127.0.0.1:8080"
 	log.Println("Serving: http://" + addr)
 	log.Fatal(http.ListenAndServe(addr, router))
 }
