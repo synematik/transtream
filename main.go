@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/gorilla/mux"
 	"io"
 	"log"
 	"net/http"
@@ -9,60 +8,42 @@ import (
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 )
 
-func read(input string, writer io.WriteCloser) <-chan error {
-	log.Println("Starting ffmpeg process1")
-	done := make(chan error)
-	go func() {
-		err := ffmpeg.
-			Input(input).
-			Output("pipe:", ffmpeg.KwArgs{
-				//"format":  "rawvideo",
-				//"pix_fmt": "rgb24",
-				//"pix_fmt": "yuv420p",
-			}).
-			WithOutput(writer).
-			Run()
-		log.Println("ffmpeg process1 done")
-		_ = writer.Close()
-		done <- err
-		close(done)
-	}()
-	return done
-}
-
-func Handler(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Disposition", "attachment; filename=video.mp4")
-	writer.Header().Set("Content-Type", "application/octet-stream")
+func streamHandler(w http.ResponseWriter, r *http.Request) {
+	baseURL := "https://synema.cxllmerichie.com/proxy/6e0589342c84c1e468c6442bad7cfbf4:2025020707:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFFtS2lSRGZTTC9RQVdRRjBzNzNtanc9PQ==/2/4/8/7/3/5/brh53.mp4:hls:manifest.m3u8"
 
 	pr, pw := io.Pipe()
 
-	done := read("video.mp4", pw)
+	go func() {
+		err := ffmpeg.
+			Input(baseURL).
+			Output("pipe:1", ffmpeg.KwArgs{
+				"c:v": "libx264", // Choose a codec like H.264
+				"c:a": "aac",     // Audio codec
+				"f":   "mp4",     // Output format (MP4)
+			}).
+			WithOutput(pw).
+			Run()
 
-	_, err := io.Copy(writer, pr)
+		if err != nil {
+			log.Println("FFmpeg error:", err)
+		}
+		pw.Close()
+	}()
+
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+	_, err := io.Copy(w, pr)
 	if err != nil {
-		http.Error(writer, "Failed to stream file", http.StatusInternalServerError)
+		log.Println("Failed to stream video:", err)
+		http.Error(w, "Failed to stream video", http.StatusInternalServerError)
 	}
-
-	err = <-done
-	if err != nil {
-		log.Println("FFmpeg error:", err)
-	}
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Println(r.RequestURI)
-		next.ServeHTTP(w, r)
-	})
 }
 
 func main() {
-	router := mux.NewRouter()
-	router.Use(loggingMiddleware)
-	router.HandleFunc("/", Handler).
-		Methods("GET")
+	http.HandleFunc("/stream", streamHandler)
 
-	addr := "192.168.137.137:8080"
-	log.Println("Serving: http://" + addr)
-	log.Fatal(http.ListenAndServe(addr, router))
+	addr := ":8080"
+	log.Println("Server started at http://localhost:8080")
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
