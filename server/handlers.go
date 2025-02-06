@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"log"
@@ -14,31 +15,37 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Create client channel
-	clientChan := make(chan []byte, 4096)
-	s.clients.Store(clientChan, struct{}{})
+	pr := s.AddClient() // Each client gets its own pipe reader
+	//defer s.RemoveClient(pr)
 
-	// Ensure client is removed on disconnect
-	defer func() {
-		s.clients.Delete(clientChan)
-		close(clientChan)
-		log.Println("Client disconnected.")
-	}()
+	reader := bufio.NewReader(pr)
+	buf := make([]byte, 4096)
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
-		return
-	}
+	notify := r.Context().Done() // Detect client disconnect
 
-	reader.Re // Send chunks to client
-	for chunk := range clientChan {
-		_, err := w.Write(chunk)
-		if err != nil {
-			log.Println("Client write error:", err)
-			break
+	for {
+		select {
+		case <-notify:
+			log.Println("Client disconnected.")
+			return
+		default:
+			n, err := reader.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				log.Println("Read error:", err)
+				break
+			}
+
+			_, err = w.Write(buf[:n])
+			if err != nil {
+				log.Println("Write error:", err)
+				break
+			}
+
+			w.(http.Flusher).Flush()
 		}
-		flusher.Flush() // Ensure immediate send
 	}
 }
 

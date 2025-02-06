@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"sync"
 )
 
@@ -19,4 +20,15 @@ func NewState() *State {
 	return &State{
 		isActive: true,
 	}
+}
+
+func (s *State) AddClient() *io.PipeReader {
+	pr, pw := io.Pipe()
+	s.clients.Store(pw, struct{}{})
+	return pr
+}
+
+func (s *State) RemoveClient(pw *io.PipeWriter) {
+	s.clients.Delete(pw)
+	_ = pw.Close()
 }

@@ -10,7 +10,7 @@ import (
 func main() {
 	state := NewState()
 
-	go state.StartStream()
+	go state.Stream()
 
 	router := mux.NewRouter()
 	router.Use(LoggingMiddleware)
