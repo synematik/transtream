@@ -10,13 +10,13 @@ func (s *State) StartStream() {
 	s.once.Do(func() { // Ensures FFmpeg runs only once
 		log.Println("Starting FFmpeg process...")
 
-		// Create a pipe for streaming FFmpeg output
+		// Create pipe for FFmpeg output
 		pr, pw := io.Pipe()
 
-		// Run FFmpeg in a separate goroutine
+		// Start FFmpeg process
 		go func() {
 			err := ffmpeg.
-				Input(ManifestUrl). // Replace with your HLS URL
+				Input(ManifestUrl). // Your HLS source
 				Output("pipe:1", ffmpeg.KwArgs{
 					"format":   "mp4",
 					"vcodec":   "libx264",
@@ -30,10 +30,10 @@ func (s *State) StartStream() {
 			if err != nil {
 				log.Println("FFmpeg error:", err)
 			}
-			pw.Close() // Close writer when FFmpeg exits
+			pw.Close()
 		}()
 
-		// Broadcast FFmpeg output to all connected clients
+		// Broadcast stream to clients
 		go func() {
 			buffer := make([]byte, 4096) // Chunk size
 			for {
@@ -44,18 +44,17 @@ func (s *State) StartStream() {
 				}
 
 				// Send chunk to all connected clients
-				s.mu.Lock()
-				for ch := range s.clients {
-					log.Println(ch)
+				s.clients.Range(func(key, value interface{}) bool {
+					clientChan := key.(chan []byte)
 					select {
-					case ch <- buffer[:n]: // Send video data
-					default: // Skip if channel is full
+					case clientChan <- buffer[:n]: // Send video data
+					default: // Skip if the client buffer is full
 					}
-				}
-				s.mu.Unlock()
+					return true
+				})
 			}
 
-			// Cleanup on stream end
+			// Cleanup when stream ends
 			pr.Close()
 			log.Println("FFmpeg stream ended.")
 		}()

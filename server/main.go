@@ -14,11 +14,8 @@ func main() {
 
 	router := mux.NewRouter()
 	router.Use(LoggingMiddleware)
-	//router.HandleFunc("/single", state.SingleStreamHandler).Methods("GET")
-	//router.HandleFunc("/state", state.SingleStateHandler).Methods("POST")
-
-	router.HandleFunc("/multi", state.MultiStreamHandler).Methods("GET")
-	router.HandleFunc("/state", state.MultiStateHandler).Methods("GET")
+	router.HandleFunc("/multi", state.StreamHandler).Methods("GET")
+	router.HandleFunc("/state", state.StateHandler).Methods("GET")
 
 	addr := "127.0.0.1:8080"
 	log.Println("Serving: http://" + addr)

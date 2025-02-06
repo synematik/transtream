@@ -4,16 +4,19 @@ import (
 	"sync"
 )
 
+type StateRequest struct {
+	State bool    `json:"state"`
+	Time  float64 `json:"time"`
+}
+
 type State struct {
-	//mu       sync.Mutex
-	clients  map[chan []byte]struct{}
+	clients  sync.Map
 	isActive bool
 	once     sync.Once
 }
 
 func NewState() *State {
 	return &State{
-		clients:  make(map[chan []byte]struct{}),
 		isActive: true,
 	}
 }
