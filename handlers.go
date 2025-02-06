@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
@@ -53,8 +55,14 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Read from pipe and write to response
 	for {
+		if !s.active {
+			log.Println("Blocked for 500ms...")
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
 		n, err := reader.Read(buf)
-		log.Println(n)
+		log.Println(n, "bytes chunk")
 		if err != nil {
 			if err == io.EOF {
 				break // FFmpeg process ended
@@ -76,4 +84,31 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Close pipe reader
 	pr.Close()
+}
+
+type StateRequest struct {
+	State bool    `json:"state"`
+	Time  float64 `json:"time"`
+}
+
+func (s *State) StateHandler(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// Parse JSON
+	var req StateRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON format", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	s.active = req.State
+	s.mu.Unlock()
+
+	w.WriteHeader(http.StatusOK)
 }

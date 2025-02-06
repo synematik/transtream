@@ -1,17 +1,18 @@
 package main
 
 import (
-	"io"
 	"sync"
 )
 
 type State struct {
-	mu      sync.Mutex                // Ensures safe concurrent access
-	streams map[string]*io.PipeReader // Active FFmpeg streams
+	mu sync.Mutex
+	//streams map[string]*io.PipeReader
+	active bool
 }
 
 func NewSharedState() *State {
 	return &State{
-		streams: make(map[string]*io.PipeReader),
+		//streams: make(map[string]*io.PipeReader),
+		active: true,
 	}
 }
