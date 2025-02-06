@@ -45,9 +45,10 @@ func (s *State) StartStream() {
 
 				// Send chunk to all connected clients
 				s.clients.Range(func(key, value interface{}) bool {
-					clientChan := key.(chan []byte)
+					client := key.(chan []byte)
+					log.Println(client)
 					select {
-					case clientChan <- buffer[:n]: // Send video data
+					case client <- buffer[:n]: // Send video data
 					default: // Skip if the client buffer is full
 					}
 					return true

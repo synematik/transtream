@@ -28,8 +28,8 @@ const Page: React.FC<{}> = ({}) => {
             controlsList="nodownload noremoteplayback noplaybackrate"
             disablePictureInPicture
             disableRemotePlayback
-            onPlay={onState}
-            onPause={onState}
+            // onPlay={onState}
+            // onPause={onState}
         />
     );
 }

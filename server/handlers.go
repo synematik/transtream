@@ -15,7 +15,7 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Create client channel
-	clientChan := make(chan []byte, 10)
+	clientChan := make(chan []byte, 4096)
 	s.clients.Store(clientChan, struct{}{})
 
 	// Ensure client is removed on disconnect
@@ -25,14 +25,20 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 		log.Println("Client disconnected.")
 	}()
 
-	// Send chunks to client
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	reader.Re // Send chunks to client
 	for chunk := range clientChan {
 		_, err := w.Write(chunk)
 		if err != nil {
 			log.Println("Client write error:", err)
 			break
 		}
-		w.(http.Flusher).Flush() // Ensure immediate send
+		flusher.Flush() // Ensure immediate send
 	}
 }
 
