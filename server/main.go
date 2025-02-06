@@ -11,7 +11,7 @@ func main() {
 		ForceColors:            true,
 		DisableLevelTruncation: true,
 		DisableQuote:           true,
-		TimestampFormat:        "15:04:05.000000000",
+		TimestampFormat:        "15:04:05.000",
 		FullTimestamp:          true,
 	})
 	log.SetLevel(log.TraceLevel)
