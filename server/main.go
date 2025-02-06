@@ -8,8 +8,11 @@ import (
 
 func main() {
 	log.SetFormatter(&log.TextFormatter{
-		ForceColors:      true,
-		DisableTimestamp: true,
+		ForceColors:            true,
+		DisableLevelTruncation: true,
+		DisableQuote:           true,
+		TimestampFormat:        "15:04:05.000000000",
+		FullTimestamp:          true,
 	})
 	log.SetLevel(log.TraceLevel)
 

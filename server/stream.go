@@ -109,7 +109,8 @@ import (
 //}
 
 func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
-	log.WithField("Transcode", "").Info("transcoding...")
+	log.WithField("transcoding", "started").
+		Info("Transcode")
 	done := make(chan error)
 	go func() {
 		err := ffmpeg.
@@ -124,14 +125,20 @@ func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
 			WithOutput(pw).
 			Run()
 		if err != nil {
-			log.WithField("Transcode", "").Error("calling ffmpeg:", err)
+			log.WithFields(log.Fields{
+				"on":  "ffmpeg call",
+				"err": err,
+			}).Error("Transcode")
 			done <- err
 			close(done)
 		}
 
 		err = pw.Close()
 		if err != nil {
-			log.WithField("Transcode", "").Error("closing ffmpeg pw:", err)
+			log.WithFields(log.Fields{
+				"on":  "closing ffmpeg pw",
+				"err": err,
+			}).Error("Transcode")
 			done <- err
 			close(done)
 		}
@@ -143,7 +150,8 @@ func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
 
 func (s *State) Stream(manifestURL string) {
 	s.once.Do(func() {
-		log.WithField("Stream", "").Info("streaming...")
+		log.WithField("streaming", "started").
+			Info("Stream")
 
 		pr, pw := io.Pipe()
 
@@ -161,19 +169,25 @@ func (s *State) Stream(manifestURL string) {
 
 			if !s.isActive || numClients == 0 {
 				timeout := 500 * time.Millisecond
-				log.WithField("Broadcast", "").Info("blocked for ", timeout, "...")
+				log.WithField("timeout", timeout).
+					Info("Broadcast")
 				time.Sleep(timeout)
 				continue
 			}
 
 			n, err := reader.Read(buf)
-			log.WithField("Broadcast", "").Debug("broadcast", n, "bytes")
+			log.WithField("reading", n).
+				Trace("Broadcast")
 			if err != nil {
 				if err == io.EOF {
-					log.WithField("Broadcast", "").Info("completed.")
+					log.WithField("completed", "EOF").
+						Info("Broadcast")
 					break
 				}
-				log.WithField("Broadcast", "").Error("reading ffmpeg pr:", err)
+				log.WithFields(log.Fields{
+					"on":  "reading ffmpeg pr",
+					"err": err,
+				}).Error("Broadcast")
 				break
 			}
 
@@ -181,23 +195,32 @@ func (s *State) Stream(manifestURL string) {
 				pw := client.(*io.PipeWriter)
 				n, err = pw.Write(buf[:n])
 				if err != nil {
-					log.WithField("Broadcast", "").Error("sharing with", pw, "failed:", err)
+					log.WithFields(log.Fields{
+						"on":  "sharing with pw",
+						"err": err,
+					}).Error("Broadcast")
 					s.RemoveClient(pw)
 				}
-				log.WithField("Broadcast", "").Debug("shared", n, "bytes with", pw)
+				log.WithField("shared", n).
+					Trace("Broadcast")
 				return true // Continue iterating
 			})
 		}
 
 		err := <-transcoded
 		if err != nil {
-			log.WithField("Transcode", "").Error("duplicating message:", err)
+			log.WithField("err", err).
+				Error("Transcode")
 			panic(err)
 		}
 		err = pr.Close()
 		if err != nil {
-			log.WithField("Broadcast", "").Error("closing ffmpeg pr:", err)
+			log.WithFields(log.Fields{
+				"on":  "closing ffmpeg pr",
+				"err": err,
+			}).Error("Broadcast")
 		}
-		log.WithField("Broadcast", "").Info("closed ffmpeg pr")
+		log.WithField("Broadcast", "").
+			Info("closed ffmpeg pr")
 	})
 }
