@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
+func (s *State) SingleStreamHandler(w http.ResponseWriter, r *http.Request) {
 	//	w.Header().Set("Content-Type", "application/octet-stream")
 	//	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Type", "video/mp4")
@@ -55,7 +55,7 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Read from pipe and write to response
 	for {
-		if !s.active {
+		if !s.isActive {
 			log.Println("Blocked for 500ms...")
 			time.Sleep(500 * time.Millisecond)
 			continue
@@ -91,7 +91,7 @@ type StateRequest struct {
 	Time  float64 `json:"time"`
 }
 
-func (s *State) StateHandler(w http.ResponseWriter, r *http.Request) {
+func (s *State) SingleStateHandler(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -107,7 +107,7 @@ func (s *State) StateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	s.active = req.State
+	s.isActive = req.State
 	s.mu.Unlock()
 
 	w.WriteHeader(http.StatusOK)

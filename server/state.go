@@ -5,14 +5,15 @@ import (
 )
 
 type State struct {
-	mu sync.Mutex
-	//streams map[string]*io.PipeReader
-	active bool
+	//mu       sync.Mutex
+	clients  map[chan []byte]struct{}
+	isActive bool
+	once     sync.Once
 }
 
 func NewState() *State {
 	return &State{
-		//streams: make(map[string]*io.PipeReader),
-		active: true,
+		clients:  make(map[chan []byte]struct{}),
+		isActive: true,
 	}
 }
