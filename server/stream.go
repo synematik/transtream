@@ -10,11 +10,10 @@ import (
 
 // func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
 func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) {
-	log.Println("Transcoding...")
+	log.Println("[Transcode] (?) transcoding...")
 	//done := make(chan error)
 	go func() {
-		//err := ffmpeg.
-		ffmpeg.
+		err := ffmpeg.
 			Input(manifestURL).
 			Output("pipe:1", ffmpeg.KwArgs{
 				"format":   "mp4",
@@ -25,8 +24,14 @@ func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) {
 			}).
 			WithOutput(pw).
 			Run()
+		if err != nil {
+			log.Println("[Transcode] (ERR) calling ffmpeg:", err)
+		}
 
-		_ = pw.Close()
+		err = pw.Close()
+		if err != nil {
+			log.Println("[Transcode] (ERR) closing ffmpeg pw:", err)
+		}
 		//done <- err
 		//close(done)
 	}()
@@ -35,7 +40,7 @@ func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) {
 
 func (s *State) Stream() {
 	s.once.Do(func() {
-		log.Println("Streaming...")
+		log.Println("[Stream] (?) streaming...")
 
 		pr, pw := io.Pipe()
 
@@ -57,7 +62,7 @@ func (s *State) Stream() {
 
 // func (s *State) Broadcast(pr *io.PipeReader) <-chan error {
 func (s *State) Broadcast(pr *io.PipeReader) {
-	log.Println("Broadcasting...")
+	log.Println("[Broadcast] (?) broadcasting...")
 	//done := make(chan error)
 	go func() {
 		reader := bufio.NewReader(pr)
@@ -65,34 +70,40 @@ func (s *State) Broadcast(pr *io.PipeReader) {
 
 		for {
 			if !s.isActive {
-				log.Println("Blocked for 500ms...")
-				time.Sleep(500 * time.Millisecond)
+				timeout := 500 * time.Millisecond
+				log.Println("[Broadcast] (?) blocked for", timeout, "ms...")
+				time.Sleep(timeout)
 				continue
 			}
 
 			n, err := reader.Read(buf)
-			log.Println(n, "bytes chunk")
+			log.Println("[Broadcast] (OK) broadcast", n, "bytes")
 			if err != nil {
 				if err == io.EOF {
-					break // FFmpeg process ended
+					log.Println("[Broadcast] (OK) completed.")
+					break
 				}
-				log.Println("Error reading from FFmpeg:", err)
+				log.Println("[Broadcast] (ERR) reading ffmpeg pr:", err)
 				break
 			}
 
-			s.clients.Range(func(key, _ interface{}) bool {
-				pw := key.(*io.PipeWriter) // Get PipeWriter from sync.Map
-				_, err := pw.Write(buf[:n])
+			s.clients.Range(func(client, _ interface{}) bool {
+				pw := client.(*io.PipeWriter)
+				n, err = pw.Write(buf[:n])
 				if err != nil {
-					log.Println("Error writing to client:", err)
-					s.RemoveClient(pw) // Remove client on error
+					log.Println("[Broadcast] (ERR) sharing with", pw, "failed:", err)
+					s.RemoveClient(pw)
 				}
+				log.Println("[Broadcast] (OK) shared", n, "bytes with", pw)
 				return true // Continue iterating
 			})
 		}
 
-		// Close pipe reader
-		pr.Close()
+		err := pr.Close()
+		if err != nil {
+			log.Println("[Broadcast] (ERR) closing ffmpeg pr:", err)
+		}
+		log.Println("[Broadcast] (OK) closed ffmpeg pr")
 	}()
 	//return done
 }

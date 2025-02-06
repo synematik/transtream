@@ -9,44 +9,57 @@ import (
 )
 
 func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Client connected.")
+
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Transfer-Encoding", "chunked")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	//w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
 	pr := s.AddClient() // Each client gets its own pipe reader
 	//defer s.RemoveClient(pr)
 
 	reader := bufio.NewReader(pr)
 	buf := make([]byte, 4096)
 
-	notify := r.Context().Done() // Detect client disconnect
-
 	for {
 		select {
-		case <-notify:
-			log.Println("Client disconnected.")
+		case <-r.Context().Done(): // Detect client disconnect
+			log.Println("[StreamHandler] Client disconnected.")
 			return
 		default:
+			log.Println("[StreamHandler] (?) Reading buffer...")
 			n, err := reader.Read(buf)
 			if err != nil {
 				if err == io.EOF {
+					log.Println("[StreamHandler] (OK) file ended, trace:", err)
 					break
 				}
-				log.Println("Read error:", err)
+				log.Println("[StreamHandler] (ERR) reading buffer:", err)
 				break
 			}
+			log.Println("[StreamHandler] (OK) read", n, "buffer bytes")
 
-			_, err = w.Write(buf[:n])
+			n, err = w.Write(buf[:n])
 			if err != nil {
-				log.Println("Write error:", err)
+				log.Println("[StreamHandler] (ERR) writing buffer:", err)
 				break
 			}
+			log.Println("[StreamHandler] (?) delivering", n, "bytes...")
 
-			w.(http.Flusher).Flush()
+			flusher.Flush()
+			log.Println("[StreamHandler] (OK) delivered", n, "bytes")
 		}
 	}
+
+	pr.Close()
 }
 
 func (s *State) StateHandler(w http.ResponseWriter, r *http.Request) {

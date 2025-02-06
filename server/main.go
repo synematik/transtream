@@ -14,7 +14,7 @@ func main() {
 
 	router := mux.NewRouter()
 	router.Use(LoggingMiddleware)
-	router.HandleFunc("/multi", state.StreamHandler).Methods("GET")
+	router.HandleFunc("/", state.StreamHandler).Methods("GET")
 	router.HandleFunc("/state", state.StateHandler).Methods("GET")
 
 	addr := "127.0.0.1:8080"

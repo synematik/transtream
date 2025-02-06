@@ -20,7 +20,7 @@ const Page: React.FC<{}> = ({}) => {
 
     return (
         <video
-            src='http://127.0.0.1:8080/multi'
+            src='http://127.0.0.1:8080'
             className={'w-full h-full'}
             muted
             autoPlay
