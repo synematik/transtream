@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	ManifestUrl              string = "https://synema.cxllmerichie.com/proxy/6e0589342c84c1e468c6442bad7cfbf4:2025020707:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydFFtS2lSRGZTTC9RQVdRRjBzNzNtanc9PQ==/2/4/8/7/3/5/brh53.mp4:hls:manifest.m3u8"
+	ManifestUrl              string = "https://synema.cxllmerichie.com/proxy/f2c77277c3ae531faac9c32d2c04863d:2025020822:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydGdnRjhYVGZDZmlIYUYyWjU2eVRSZ0E9PQ==/2/4/8/5/0/7/2el8n.mp4:hls:manifest.m3u8"
 	Address                  string = "0.0.0.0:8079"
 	TransBufSize             uint   = 32768
 	SockBufSize              uint   = 4096
@@ -17,8 +17,8 @@ const (
 func state() *Stream {
 	s := DefaultStream()
 
-	go s.BroadcastRegistry()
-	go s.StreamSource(ManifestUrl)
+	//go s.BroadcastRegistry()
+	//go s.StreamSource()
 
 	return s
 }
@@ -34,7 +34,8 @@ func app() *mux.Router {
 		})
 	})
 
-	r.HandleFunc("/", s.SocketStreamHandler)
+	r.HandleFunc("/socket", s.SocketStreamHandler)
+	r.HandleFunc("/", s.StreamHandler)
 
 	return r
 }

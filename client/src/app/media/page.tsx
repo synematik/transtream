@@ -18,18 +18,15 @@ export default function VideoStream() {
         let buffer: SourceBuffer;
         let socket: WebSocket;
         let segments: Array<BufferSource> = [];
-        // Ensure the MIME type and codecs match what FFmpeg produces.
-        const codec = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+        // Set MIME type for WebM output.
+        const mimeCodec = 'video/webm; codecs="vp8, vorbis"';
 
-        // Helper: Attempt to append any queued segments.
         const appendSegments = () => {
-            // Do nothing if there's no buffer, it's busy, or nothing queued.
             if (!buffer || buffer.updating || segments.length === 0) {
                 return;
             }
-            // Check if the video element has already encountered an error.
             if (video.error) {
-                console.error("Video element error detected; skipping segment append.");
+                console.error("Video element in error state; dropping segment.");
                 return;
             }
             const segment = segments.shift();
@@ -37,34 +34,28 @@ export default function VideoStream() {
                 buffer.appendBuffer(segment);
             } catch (err) {
                 console.error("Error appending buffer:", err);
-                // Optionally, you could re-queue the segment here.
+                segments.push(segment);
             }
         };
 
         mediaSource.addEventListener("sourceopen", () => {
             try {
-                buffer = mediaSource.addSourceBuffer(codec);
+                buffer = mediaSource.addSourceBuffer(mimeCodec);
             } catch (err) {
                 console.error("Error while adding SourceBuffer:", err);
                 return;
             }
 
             buffer.mode = "segments";
-
-            // Append any pending segments after each update.
             buffer.addEventListener("updateend", appendSegments);
-
-            // Log any SourceBuffer errors.
             buffer.addEventListener("error", (e) => {
                 console.error("SourceBuffer error:", e);
             });
 
-            // Now that the SourceBuffer is ready, open the WebSocket connection.
             socket = new WebSocket("ws://192.168.137.137:8079");
             socket.binaryType = "arraybuffer";
 
             socket.addEventListener("message", (event) => {
-                // Check video.error before trying to append.
                 if (video.error) {
                     console.error("Video element in error state; dropping segment.");
                     return;
@@ -77,7 +68,6 @@ export default function VideoStream() {
                         buffer.appendBuffer(segment);
                     } catch (err) {
                         console.error("Error appending buffer:", err);
-                        // In case of error, queue the segment for a later attempt.
                         segments.push(segment);
                     }
                 }
@@ -88,7 +78,6 @@ export default function VideoStream() {
             });
 
             socket.addEventListener("close", () => {
-                // Signal end-of-stream if the MediaSource is still open.
                 if (mediaSource.readyState === "open") {
                     try {
                         mediaSource.endOfStream();
@@ -99,12 +88,10 @@ export default function VideoStream() {
             });
         });
 
-        // Listen for errors on the video element itself.
         video.addEventListener("error", (e) => {
             console.error("Video element error:", video.error);
         });
 
-        // Cleanup on unmount.
         return () => {
             if (socket) {
                 socket.close();
@@ -120,12 +107,6 @@ export default function VideoStream() {
     }, []);
 
     return (
-        <video
-            ref={videoRef}
-            controls
-            autoPlay
-            muted
-            className={'size-full'}
-        />
+        <video ref={videoRef} controls autoPlay muted className={'size-full'} />
     );
 }

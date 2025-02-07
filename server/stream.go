@@ -75,22 +75,28 @@ func (s *Stream) BroadcastRegistry() {
 	}
 }
 
-func (s *Stream) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
+func (s *Stream) Transcode(pw *io.PipeWriter) <-chan error {
 	log.WithField("transcoding", "started").
 		Info("Transcode")
 	done := make(chan error)
 	go func() {
 		err := ffmpeg.
-			Input(manifestURL).
+			Input(ManifestUrl).
 			Output("pipe:1", ffmpeg.KwArgs{
-				"c:v":           "libx264",
-				"preset":        "veryfast",
-				"tune":          "zerolatency",
-				"c:a":           "aac",
-				"ar":            "44100",
-				"movflags":      "frag_keyframe+empty_moov+default_base_moof",
-				"f":             "mp4",
-				"frag_duration": "2000000",
+				"y":              "",
+				"r":              "25",
+				"g":              "75",
+				"s":              "1920x1080",
+				"quality":        "realtime",
+				"speed":          "5",
+				"threads":        "4",
+				"tile-columns":   "2",
+				"frame-parallel": "1",
+				"b:v":            "4500k",
+				"c:v":            "libvpx-vp9",
+				"b:a":            "196k",
+				"c:a":            "libopus",
+				"f":              "webm",
 			}).
 			WithOutput(pw).
 			Run()
@@ -119,13 +125,13 @@ func (s *Stream) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
 	return done
 }
 
-func (s *Stream) StreamSource(manifestURL string) {
+func (s *Stream) StreamSource() {
 	log.WithField("streaming", "started").
 		Info("StreamSource")
 
 	pr, pw := io.Pipe()
 
-	transcoded := s.Transcode(pw, manifestURL)
+	transcoded := s.Transcode(pw)
 
 	reader := bufio.NewReader(pr)
 	buf := make([]byte, TransBufSize)
