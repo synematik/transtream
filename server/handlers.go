@@ -32,7 +32,7 @@ func (s *State) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	//defer s.RemoveClient(pr)
 
 	reader := bufio.NewReader(pr)
-	buf := make([]byte, 4096)
+	buf := make([]byte, 2048)
 
 	for {
 		select {

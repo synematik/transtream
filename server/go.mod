@@ -4,6 +4,7 @@ go 1.23.6
 
 require (
 	github.com/gorilla/mux v1.8.1
+	github.com/gorilla/websocket v1.5.3
 	github.com/sirupsen/logrus v1.9.3
 	github.com/u2takey/ffmpeg-go v0.5.0
 )

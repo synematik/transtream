@@ -66,7 +66,7 @@ import (
 //	//done := make(chan error)
 //	go func() {
 //		reader := bufio.NewReader(pr)
-//		buf := make([]byte, 4096)
+//		buf := make([]byte, 2048)
 //
 //		for {
 //			if !s.isActive {
@@ -108,20 +108,14 @@ import (
 //	//return done
 //}
 
-func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
+func (s *State) Transcode(pw *io.PipeWriter, manifestURL string, ikw ffmpeg.KwArgs, okw ffmpeg.KwArgs) <-chan error {
 	log.WithField("transcoding", "started").
 		Info("Transcode")
 	done := make(chan error)
 	go func() {
 		err := ffmpeg.
-			Input(manifestURL).
-			Output("pipe:1", ffmpeg.KwArgs{
-				"format":   "mp4",
-				"vcodec":   "libx264",
-				"preset":   "ultrafast",
-				"tune":     "zerolatency",
-				"movflags": "frag_keyframe+empty_moov+faststart",
-			}).
+			Input(manifestURL, ikw).
+			Output("pipe:1", okw).
 			WithOutput(pw).
 			Run()
 		if err != nil {
@@ -155,10 +149,16 @@ func (s *State) Stream(manifestURL string) {
 
 		pr, pw := io.Pipe()
 
-		transcoded := s.Transcode(pw, manifestURL)
+		transcoded := s.Transcode(pw, manifestURL, ffmpeg.KwArgs{}, ffmpeg.KwArgs{
+			"format":   "mp4",
+			"vcodec":   "libx264",
+			"preset":   "ultrafast",
+			"tune":     "zerolatency",
+			"movflags": "frag_keyframe+empty_moov+faststart",
+		})
 
 		reader := bufio.NewReader(pr)
-		buf := make([]byte, 4096)
+		buf := make([]byte, 2048)
 
 		for {
 			var numClients uint8
@@ -166,6 +166,8 @@ func (s *State) Stream(manifestURL string) {
 				numClients++
 				return true
 			})
+			log.WithField("clients", numClients).
+				Info("Stream")
 
 			if !s.isActive || numClients == 0 {
 				timeout := 500 * time.Millisecond

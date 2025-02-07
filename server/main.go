@@ -17,13 +17,13 @@ func main() {
 	log.SetLevel(log.TraceLevel)
 
 	state := NewState()
-
-	go state.Stream(ManifestUrl)
+	//go state.Stream(ManifestUrl)
 
 	router := mux.NewRouter()
 	router.Use(LoggingMiddleware)
-	router.HandleFunc("/", state.StreamHandler).Methods("GET")
-	router.HandleFunc("/state", state.StateHandler).Methods("GET")
+	//router.HandleFunc("/", state.StreamHandler).Methods("GET")
+	//router.HandleFunc("/state", state.StateHandler).Methods("GET")
+	router.HandleFunc("/stream", state.StreamSocket)
 
 	log.WithField("server", "").Info("Serving: http://" + Address)
 	log.WithField("server", "").Fatal(http.ListenAndServe(Address, router))
