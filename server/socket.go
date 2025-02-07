@@ -34,19 +34,21 @@ func (s *State) StreamSocket(w http.ResponseWriter, r *http.Request) {
 	transcoded := s.Transcode(pw, ManifestUrl, ffmpeg.KwArgs{
 		//"vf": "scale=640:480",
 	}, ffmpeg.KwArgs{
-		"format":  "rawvideo",
-		"pix_fmt": "rgba",
-		"vf":      "scale=640:480",
-		"r":       "60",
-		//"vcodec":   "libx264",
-		//"preset": "ultrafast",
-		//"tune":   "zerolatency",
+		"c:v":      "libx264",
+		"preset":   "veryfast",
+		"tune":     "zerolatency",
+		"c:a":      "aac",
+		"ar":       "44100",
+		"movflags": "frag_keyframe+empty_moov+default_base_moof",
+		"f":        "mp4",
+		//"movflags": "frag_keyframe+empty_moov+default_base_moof+faststart",
+		//"r":       "60",
 	})
 
-	buf := make([]byte, frameSize)
+	buf := make([]byte, 4096) //32768
 
 	for {
-		_, err := io.ReadFull(pr, buf)
+		n, err := pr.Read(buf)
 		if err != nil {
 			if err == io.EOF {
 				log.WithField("completed", "EOF").
@@ -60,11 +62,8 @@ func (s *State) StreamSocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		frame := make([]byte, frameSize)
-		copy(frame, buf)
-
 		// Send the raw RGBA frame as a binary WebSocket message.
-		err = conn.WriteMessage(websocket.BinaryMessage, frame)
+		err = conn.WriteMessage(websocket.BinaryMessage, buf[:n])
 		if err != nil {
 			log.Println("Error writing to WebSocket:", err)
 			break
