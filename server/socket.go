@@ -8,23 +8,21 @@ import (
 	"net/http"
 )
 
-const (
-	width     = 640
-	height    = 480
-	frameSize = width * height * 4 // rgba: 4 bytes per pixel
-)
-
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin:       func(r *http.Request) bool { return true },
+	EnableCompression: true,
 }
 
 func (s *State) StreamSocket(w http.ResponseWriter, r *http.Request) {
 	log.WithField("socket", "connected").
-		Error("Transcode")
+		Error("Socket")
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("WebSocket upgrade error:", err)
+		log.WithFields(log.Fields{
+			"on":  "upgrade",
+			"err": err,
+		}).Error("Socket")
 		return
 	}
 	defer conn.Close()
@@ -39,9 +37,8 @@ func (s *State) StreamSocket(w http.ResponseWriter, r *http.Request) {
 		"tune":     "zerolatency",
 		"c:a":      "aac",
 		"ar":       "44100",
-		"movflags": "frag_keyframe+empty_moov+default_base_moof",
+		"movflags": "frag_keyframe+empty_moov+default_base_moof+faststart",
 		"f":        "mp4",
-		//"movflags": "frag_keyframe+empty_moov+default_base_moof+faststart",
 		//"r":       "60",
 	})
 
@@ -52,29 +49,29 @@ func (s *State) StreamSocket(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if err == io.EOF {
 				log.WithField("completed", "EOF").
-					Info("Broadcast")
+					Info("Socket")
 				break
 			}
 			log.WithFields(log.Fields{
 				"on":  "reading ffmpeg pr",
 				"err": err,
-			}).Error("Broadcast")
+			}).Error("Socket")
 			break
 		}
 
-		// Send the raw RGBA frame as a binary WebSocket message.
 		err = conn.WriteMessage(websocket.BinaryMessage, buf[:n])
 		if err != nil {
-			log.Println("Error writing to WebSocket:", err)
+			log.WithFields(log.Fields{
+				"on":  "conn.WriteMessage(websocket.BinaryMessage, buf[:n])",
+				"err": err,
+			}).Error("Socket")
 			break
 		}
 	}
-
 	err = <-transcoded
 	if err != nil {
 		log.WithField("err", err).
-			Error("Transcode")
-		panic(err)
+			Error("Socket")
 	}
 	err = pr.Close()
 	if err != nil {
@@ -83,6 +80,6 @@ func (s *State) StreamSocket(w http.ResponseWriter, r *http.Request) {
 			"err": err,
 		}).Error("Socket")
 	}
-	log.WithField("Socket", "").
-		Info("closed ffmpeg pr")
+	log.WithField("ok", "closed ffmpeg pr").
+		Info("Socket")
 }
