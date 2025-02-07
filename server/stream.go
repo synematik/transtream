@@ -5,119 +5,96 @@ import (
 	log "github.com/sirupsen/logrus"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"io"
-	"time"
+	"sync"
 )
 
-//// func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
-//func (s *State) Transcode(pw *io.PipeWriter, manifestURL string) {
-//	log.Println("(?) transcoding...")
-//	//done := make(chan error)
-//	go func() {
-//		err := ffmpeg.
-//			Input(manifestURL).
-//			Output("pipe:1", ffmpeg.KwArgs{
-//				"format":   "mp4",
-//				"vcodec":   "libx264",
-//				"preset":   "ultrafast",
-//				"tune":     "zerolatency",
-//				"movflags": "frag_keyframe+empty_moov+faststart",
-//			}).
-//			WithOutput(pw).
-//			Run()
-//		if err != nil {
-//			log.Println("(ERR) calling ffmpeg:", err)
-//		}
-//
-//		err = pw.Close()
-//		if err != nil {
-//			log.Println("(ERR) closing ffmpeg pw:", err)
-//		}
-//		//done <- err
-//		//close(done)
-//	}()
-//	//return done
-//}
-//
-//func (s *State) Stream() {
-//	s.once.Do(func() {
-//		log.Println("[Stream] (?) streaming...")
-//
-//		pr, pw := io.Pipe()
-//
-//		//transcoded := s.Transcode(pw, ManifestUrl)
-//		go s.Transcode(pw, ManifestUrl)
-//		//err := <-transcoded
-//		//if err != nil {
-//		//	panic(err)
-//		//}
-//
-//		//broadcasted := s.Broadcast(pr)
-//		go s.Broadcast(pr)
-//		//err := <-broadcasted
-//		//if err != nil {
-//		//	panic(err)
-//		//}
-//	})
-//}
-//
-//// func (s *State) Broadcast(pr *io.PipeReader) <-chan error {
-//func (s *State) Broadcast(pr *io.PipeReader) {
-//	log.Println("(?) broadcasting...")
-//	//done := make(chan error)
-//	go func() {
-//		reader := bufio.NewReader(pr)
-//		buf := make([]byte, 2048)
-//
-//		for {
-//			if !s.isActive {
-//				timeout := 500 * time.Millisecond
-//				log.Println("(?) blocked for", timeout, "ms...")
-//				time.Sleep(timeout)
-//				continue
-//			}
-//
-//			n, err := reader.Read(buf)
-//			log.Println("(OK) broadcast", n, "bytes")
-//			if err != nil {
-//				if err == io.EOF {
-//					log.Println("(OK) completed.")
-//					break
-//				}
-//				log.Println("(ERR) reading ffmpeg pr:", err)
-//				break
-//			}
-//
-//			s.clients.Range(func(client, _ interface{}) bool {
-//				pw := client.(*io.PipeWriter)
-//				n, err = pw.Write(buf[:n])
-//				if err != nil {
-//					log.Println("(ERR) sharing with", pw, "failed:", err)
-//					s.RemoveClient(pw)
-//				}
-//				log.Println("(OK) shared", n, "bytes with", pw)
-//				return true // Continue iterating
-//			})
-//		}
-//
-//		err := pr.Close()
-//		if err != nil {
-//			log.Println("(ERR) closing ffmpeg pr:", err)
-//		}
-//		log.Println("(OK) closed ffmpeg pr")
-//	}()
-//	//return done
-//}
+// Stream represents the shared state and distribution mechanism.
+type Stream struct {
+	// broadcast channel: the ffmpeg pipe will push data chunks here.
+	broadcast chan []byte
+	// register new client channels.
+	register chan chan []byte
+	// unregister client channels.
+	unregister chan chan []byte
+	// map to hold all subscriber channels.
+	clients map[chan []byte]bool
+	// lastData holds the latest chunk produced by ffmpeg.
+	lastData []byte
 
-func (s *State) Transcode(pw *io.PipeWriter, manifestURL string, ikw ffmpeg.KwArgs, okw ffmpeg.KwArgs) <-chan error {
+	mu sync.RWMutex
+}
+
+func DefaultStream() *Stream {
+	return &Stream{
+		broadcast:  make(chan []byte, BroadcastHistoryCapacity),
+		register:   make(chan chan []byte),
+		unregister: make(chan chan []byte),
+		clients:    make(map[chan []byte]bool),
+	}
+}
+
+// BroadcastRegistry listens for register/unregister and broadcast events.
+func (s *Stream) BroadcastRegistry() {
+	for {
+		select {
+		case client := <-s.register:
+			log.WithField("register", client).Info("BroadcastRegistry")
+			s.mu.Lock()
+			s.clients[client] = true
+			// When a client connects, immediately send the latest data if available.
+			if s.lastData != nil {
+				client <- s.lastData
+			}
+			s.mu.Unlock()
+		case client := <-s.unregister:
+			log.WithField("unregister", client).Info("BroadcastRegistry")
+			s.mu.Lock()
+			if _, ok := s.clients[client]; ok {
+				delete(s.clients, client)
+				close(client)
+			}
+			s.mu.Unlock()
+		case message := <-s.broadcast:
+			log.WithField("broadcast", len(message)).Trace("BroadcastRegistry")
+			// Save the most recent message.
+			s.mu.Lock()
+			s.lastData = message
+			// BroadcastRegistry to all clients.
+			for client := range s.clients {
+				// Non-blocking send: if a client’s buffer is full, you can choose to
+				// disconnect the client or drop the message. Here we drop the message.
+				select {
+				case client <- message:
+				default:
+					// Optionally, handle slow consumers.
+					log.Println("Dropping message for a slow client")
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *Stream) Transcode(pw *io.PipeWriter, manifestURL string) <-chan error {
 	log.WithField("transcoding", "started").
 		Info("Transcode")
 	done := make(chan error)
 	go func() {
 		err := ffmpeg.
-			Input(manifestURL, ikw).
-			Output("pipe:1", okw).
+			Input(manifestURL).
+			Output("pipe:1", ffmpeg.KwArgs{
+				"c:v":           "libx264",
+				"preset":        "veryfast",
+				"tune":          "zerolatency",
+				"c:a":           "aac",
+				"ar":            "44100",
+				"movflags":      "frag_keyframe+empty_moov+default_base_moof",
+				"f":             "mp4",
+				"frag_duration": "2000000",
+			}).
 			WithOutput(pw).
 			Run()
+
 		if err != nil {
 			log.WithFields(log.Fields{
 				"on":  "ffmpeg call",
@@ -142,87 +119,55 @@ func (s *State) Transcode(pw *io.PipeWriter, manifestURL string, ikw ffmpeg.KwAr
 	return done
 }
 
-func (s *State) Stream(manifestURL string) {
-	s.once.Do(func() {
-		log.WithField("streaming", "started").
-			Info("Stream")
+func (s *Stream) StreamSource(manifestURL string) {
+	log.WithField("streaming", "started").
+		Info("StreamSource")
 
-		pr, pw := io.Pipe()
+	pr, pw := io.Pipe()
 
-		transcoded := s.Transcode(pw, manifestURL, ffmpeg.KwArgs{}, ffmpeg.KwArgs{
-			"format":   "mp4",
-			"vcodec":   "libx264",
-			"preset":   "ultrafast",
-			"tune":     "zerolatency",
-			"movflags": "frag_keyframe+empty_moov+faststart",
-		})
+	transcoded := s.Transcode(pw, manifestURL)
 
-		reader := bufio.NewReader(pr)
-		buf := make([]byte, 2048)
+	reader := bufio.NewReader(pr)
+	buf := make([]byte, TransBufSize)
 
-		for {
-			var numClients uint8
-			s.clients.Range(func(k, v interface{}) bool {
-				numClients++
-				return true
-			})
-			log.WithField("clients", numClients).
-				Info("Stream")
-
-			if !s.isActive || numClients == 0 {
-				timeout := 500 * time.Millisecond
-				log.WithField("timeout", timeout).
-					Info("Broadcast")
-				time.Sleep(timeout)
-				continue
-			}
-
-			n, err := reader.Read(buf)
-			log.WithField("reading", n).
-				Trace("Broadcast")
-			if err != nil {
-				if err == io.EOF {
-					log.WithField("completed", "EOF").
-						Info("Broadcast")
-					break
-				}
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			if err == io.EOF {
 				log.WithFields(log.Fields{
-					"on":  "reading ffmpeg pr",
-					"err": err,
-				}).Error("Broadcast")
+					"ok":    "EOF",
+					"trace": err,
+				}).Info("Transcode")
 				break
 			}
-
-			s.clients.Range(func(client, _ interface{}) bool {
-				pw := client.(*io.PipeWriter)
-				n, err = pw.Write(buf[:n])
-				if err != nil {
-					log.WithFields(log.Fields{
-						"on":  "sharing with pw",
-						"err": err,
-					}).Error("Broadcast")
-					s.RemoveClient(pw)
-				}
-				log.WithField("shared", n).
-					Trace("Broadcast")
-				return true // Continue iterating
-			})
-		}
-
-		err := <-transcoded
-		if err != nil {
-			log.WithField("err", err).
-				Error("Transcode")
-			panic(err)
-		}
-		err = pr.Close()
-		if err != nil {
 			log.WithFields(log.Fields{
-				"on":  "closing ffmpeg pr",
+				"on":  "reading from ffmpeg pipe",
 				"err": err,
-			}).Error("Broadcast")
+			}).Error("Transcode")
+			break
 		}
-		log.WithField("Broadcast", "").
-			Info("closed ffmpeg pr")
-	})
+		// It’s important to copy the data since buf will be reused.
+		chunk := make([]byte, n)
+		copy(chunk, buf[:n])
+		log.WithField("transcoded", n).
+			Trace("StreamSource")
+		s.broadcast <- chunk
+	}
+
+	err := <-transcoded
+	if err != nil {
+		log.WithField("err", err).
+			Error("Transcode")
+	}
+
+	err = pr.Close()
+	if err != nil {
+		log.WithFields(log.Fields{
+			"on":  "closing ffmpeg pr",
+			"err": err,
+		}).Error("BroadcastRegistry")
+	}
+
+	log.WithField("ok", "closed ffmpeg pr").
+		Info("BroadcastRegistry")
 }

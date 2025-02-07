@@ -60,7 +60,7 @@ export default function VideoStream() {
             });
 
             // Now that the SourceBuffer is ready, open the WebSocket connection.
-            socket = new WebSocket("ws://192.168.137.137:8079/stream");
+            socket = new WebSocket("ws://192.168.137.137:8079");
             socket.binaryType = "arraybuffer";
 
             socket.addEventListener("message", (event) => {
