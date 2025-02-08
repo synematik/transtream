@@ -85,7 +85,7 @@ func (s *Stream) Transcode(pw *io.PipeWriter) <-chan error {
 			Output("pipe:1", ffmpeg.KwArgs{
 				"y":              "",
 				"r":              "30",
-				"g":              "90",
+				"g":              "1",
 				"s":              "1920x1080",
 				"quality":        "realtime",
 				"speed":          "7",
@@ -99,7 +99,9 @@ func (s *Stream) Transcode(pw *io.PipeWriter) <-chan error {
 				"c:v":            "libvpx-vp9",
 				"b:a":            "196k",
 				"c:a":            "libopus",
-				"f":              "webm",
+				//"force_key_frames": "expr:gte(t,n_forced*5)",
+				//"x264-params":      "keyint=20:scenecut=0",
+				"f": "webm",
 			}).
 			WithOutput(pw).
 			Run()
