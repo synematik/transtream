@@ -7,7 +7,7 @@ import {env} from "~/lib";
 const Page: React.FC<{}> = ({}) => {
     return (
         <video
-            src={env.API.BASE_URL}
+            src={`${env.API.BASE_URL}/stream`}
             className={'w-full h-full'}
             muted
             autoPlay

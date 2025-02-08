@@ -95,7 +95,7 @@ func (s *Stream) Transcode(pw *io.PipeWriter) <-chan error {
 				"qmax":           "48",
 				"tile-columns":   "2",
 				"frame-parallel": "1",
-				"b:v":            "4500k",
+				"b:v":            "6000k",
 				"c:v":            "libvpx-vp9",
 				"b:a":            "196k",
 				"c:a":            "libopus",
@@ -128,9 +128,9 @@ func (s *Stream) Transcode(pw *io.PipeWriter) <-chan error {
 	return done
 }
 
-func (s *Stream) StreamSource() {
+func (s *Stream) RegisterStream() {
 	log.WithField("streaming", "started").
-		Info("StreamSource")
+		Info("RegisterStream")
 
 	pr, pw := io.Pipe()
 
@@ -159,7 +159,7 @@ func (s *Stream) StreamSource() {
 		chunk := make([]byte, n)
 		copy(chunk, buf[:n])
 		log.WithField("transcoded", n).
-			Trace("StreamSource")
+			Trace("RegisterStream")
 		s.broadcast <- chunk
 	}
 

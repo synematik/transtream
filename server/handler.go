@@ -70,3 +70,40 @@ func (s *Stream) StreamHandler(w http.ResponseWriter, r *http.Request) {
 	log.WithField("ok", "closed ffmpeg pr").
 		Info("BroadcastRegistry")
 }
+
+func (s *Stream) BroadcastHandler(w http.ResponseWriter, r *http.Request) {
+	//go s.BroadcastRegistry()
+	//go s.RegisterStream()
+
+	w.Header().Set("Content-Type", "video/webm")
+	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Create a channel for this client.
+	stream := make(chan []byte, TransBufSize)
+	// Register this client with the hub.
+	s.register <- stream
+	defer func() {
+		s.unregister <- stream
+	}()
+
+	for chunk := range stream {
+		// Write chunk to client
+		_, err := w.Write(chunk)
+		if err != nil {
+			log.Println("Client disconnected:", err)
+			break
+		}
+
+		// Flush to send data immediately
+		flusher.Flush()
+	}
+}
