@@ -72,8 +72,8 @@ func (s *Stream) StreamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Stream) BroadcastHandler(w http.ResponseWriter, r *http.Request) {
-	//go s.BroadcastRegistry()
-	//go s.RegisterStream()
+	go s.BroadcastRegistry()
+	go s.RegisterStream()
 
 	w.Header().Set("Content-Type", "video/webm")
 	w.Header().Set("Transfer-Encoding", "chunked")

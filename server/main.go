@@ -17,8 +17,8 @@ const (
 func state() *Stream {
 	s := DefaultStream()
 
-	go s.BroadcastRegistry()
-	go s.RegisterStream()
+	//go s.BroadcastRegistry()
+	//go s.RegisterStream()
 
 	return s
 }
