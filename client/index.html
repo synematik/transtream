@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>WebRTC Video Stream</title>
+</head>
+<body>
+<video id="video" autoplay playsinline controls style="width: 640px; height: 360px;"></video>
+<script>
+    async function start() {
+        const pc = new RTCPeerConnection();
+
+        // When a track is received, attach it to the video element.
+        pc.ontrack = (event) => {
+            const video = document.getElementById("video");
+            if (video.srcObject !== event.streams[0]) {
+                video.srcObject = event.streams[0];
+            }
+        };
+
+        // Create an SDP offer.
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // Send the offer to the server.
+        const response = await fetch("/offer", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                sdp: pc.localDescription.sdp,
+                type: pc.localDescription.type
+            })
+        });
+
+        // Parse the SDP answer from the server.
+        const answer = await response.json();
+        await pc.setRemoteDescription(answer);
+    }
+
+    // Start the connection.
+    start().catch(console.error);
+</script>
+</body>
+</html>
