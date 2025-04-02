@@ -52,7 +52,7 @@ export default function VideoStream() {
                 console.error("SourceBuffer error:", e);
             });
 
-            socket = new WebSocket("ws://192.168.137.137:8079");
+            socket = new WebSocket("ws://127.0.0.1:8079");
             socket.binaryType = "arraybuffer";
 
             socket.addEventListener("message", (event) => {

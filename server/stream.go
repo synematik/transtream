@@ -88,7 +88,7 @@ func (s *Stream) Transcode(pw *io.PipeWriter) <-chan error {
 				//"re":             "",
 				"y":              "",
 				"r":              "30",
-				"g":              "15",
+				"g":              "1",
 				"s":              "1920x1080",
 				"quality":        "realtime",
 				"speed":          "7",

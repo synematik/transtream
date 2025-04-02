@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	ManifestUrl              string = "https://synema.cxllmerichie.com/proxy/f2c77277c3ae531faac9c32d2c04863d:2025020822:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydGdnRjhYVGZDZmlIYUYyWjU2eVRSZ0E9PQ==/2/4/8/5/0/7/2el8n.mp4:hls:manifest.m3u8"
+	ManifestUrl              string = "https://synema.cxllmerichie.com/proxy/a139a98e16cf42ba483b27d7554d4226:2025021806:R01lcjFaQkF1QXFCeHBCY20weGU0WVh1am5HVzVZT0swcElWN3k2M1hja2hPVURhdlFLd2xobHluODRkd2hydHBCanlSeWVqTWRTbGtsb0NrUUNMMnc9PQ==/2/4/8/5/0/6/1neuy.mp4:hls:manifest.m3u8"
 	Address                  string = "0.0.0.0:8079"
 	TransBufSize             uint   = 32 * 1024
 	SockBufSize              uint   = 4 * 1024
