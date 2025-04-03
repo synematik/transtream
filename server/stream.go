@@ -81,11 +81,10 @@ func (s *Stream) Transcode(pw *io.PipeWriter) <-chan error {
 	done := make(chan error)
 	go func() {
 		err := ffmpeg.
-			Input(ManifestUrl, ffmpeg.KwArgs{
+			Input(SourceUrl, ffmpeg.KwArgs{
 				"re": "",
 			}).
 			Output("pipe:1", ffmpeg.KwArgs{
-				//"re":             "",
 				"y":              "",
 				"r":              "30",
 				"g":              "1",
