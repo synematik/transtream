@@ -1,18 +1,42 @@
-<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="utf-8">
+    <title>Simple WebRTC Player</title>
 </head>
-<body style="margin: 0; padding: 0; background-color: black; display: flex; align-items: center; justify-content: center; height: 100vh; width:100vw;">
-<video
-    id="video"
-    src='http://127.0.0.1:8080'
-    width="100%"
-    height="100%"
-    muted
-    autoplay
-    controls
-/>
+<body>
+<h1>Simple WebRTC Player</h1>
+<video id="video" autoplay playsinline controls style="width:80%;"></video>
+<script>
+    (async function() {
+        // Create a new RTCPeerConnection.
+        const pc = new RTCPeerConnection();
+
+        // When a track is received, attach it to the video element.
+        pc.ontrack = function(event) {
+            const video = document.getElementById('video');
+            if (video.srcObject !== event.streams[0]) {
+                video.srcObject = event.streams[0];
+            }
+        };
+
+        // Create an offer and set it as the local description.
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // Send the offer to the server.
+        console.log(pc.localDescription.sdp)
+        const answer = await fetch('/offer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sdp: pc.localDescription.sdp })
+        }).then(async response => {
+            console.log(await response.text())
+            return await response.json()
+        })
+            .catch((error) => console.error(error));
+        // Set the received SDP answer as the remote description.
+        await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
+    })();
+</script>
 </body>
 </html>
