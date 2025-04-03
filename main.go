@@ -1,159 +1,182 @@
 package main
 
 import (
-	"bufio"
-	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
+	"log"
 	"net"
-	"os"
-	"strings"
+	"net/http"
 
-	"github.com/pion/webrtc/v4"
+	"github.com/gorilla/websocket"
+	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v3"
 )
 
-func listen() {
-	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5000})
-	if err != nil {
-		panic(err)
-	}
-
-	// Increase the UDP receive buffer size
-	// Default UDP buffer sizes vary on different operating systems
-	bufferSize := 300000 // 300KB
-	err = listener.SetReadBuffer(bufferSize)
-	if err != nil {
-		panic(err)
-	}
-
-	defer func() {
-		if err = listener.Close(); err != nil {
-			panic(err)
-		}
-	}()
-
-	// Read RTP packets forever and send them to the WebRTC Client
-	inboundRTPPacket := make([]byte, 1600) // UDP MTU
-	for {
-		n, _, err := listener.ReadFrom(inboundRTPPacket)
-		if err != nil {
-			panic(fmt.Sprintf("error during read: %s", err))
-		}
-
-		if _, err = videoTrack.Write(inboundRTPPacket[:n]); err != nil {
-			if errors.Is(err, io.ErrClosedPipe) {
-				// The peerConnection has been closed.
-				return
-			}
-
-			panic(err)
-		}
-	}
-}
+var upgrader = websocket.Upgrader{}
 
 func main() {
-	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
-		},
-	})
-	if err != nil {
-		panic(err)
+	// Create a MediaEngine with default codecs (H264 for video and Opus for audio)
+	m := &webrtc.MediaEngine{}
+	if err := m.RegisterDefaultCodecs(); err != nil {
+		log.Fatal(err)
 	}
 
-	// Create a video track
-	videoTrack, err := webrtc.NewTrackLocalStaticRTP(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion",
-	)
-	if err != nil {
-		panic(err)
-	}
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(m))
 
-	rtpSender, err := peerConnection.AddTrack(videoTrack)
-	if err != nil {
-		panic(err)
-	}
-	// Read incoming RTCP packets
-	// Before these packets are returned they are processed by interceptors. For things
-	// like NACK this needs to be called.
-	//go func() {
-	//	rtcpBuf := make([]byte, 1500)
-	//	for {
-	//		if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-	//			return
-	//		}
-	//	}
-	//}()
+	// HTTP server: serve static files from "./static" (for our HTML page)
+	http.Handle("/", http.FileServer(http.Dir("./")))
 
-	// Set the handler for ICE connection state
-	// This will notify you when the peer has connected/disconnected
-	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("Connection State has changed %s \n", connectionState.String())
+	// WebSocket endpoint for signaling
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Println("Upgrade error:", err)
+			return
+		}
+		defer conn.Close()
 
-		if connectionState == webrtc.ICEConnectionStateFailed {
-			if closeErr := peerConnection.Close(); closeErr != nil {
-				panic(closeErr)
+		// Create a new PeerConnection
+		peerConnection, err := api.NewPeerConnection(webrtc.Configuration{})
+		if err != nil {
+			log.Println("Error creating PeerConnection:", err)
+			return
+		}
+		defer peerConnection.Close()
+
+		// Create local video track (H264) and audio track (Opus)
+		videoTrack, err := webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264},
+			"video", "pion",
+		)
+		if err != nil {
+			log.Println("Error creating video track:", err)
+			return
+		}
+		audioTrack, err := webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+			"audio", "pion",
+		)
+		if err != nil {
+			log.Println("Error creating audio track:", err)
+			return
+		}
+		if _, err = peerConnection.AddTrack(videoTrack); err != nil {
+			log.Println("Error adding video track:", err)
+			return
+		}
+		if _, err = peerConnection.AddTrack(audioTrack); err != nil {
+			log.Println("Error adding audio track:", err)
+			return
+		}
+
+		// ICE candidate exchange: send each candidate to the browser via WebSocket
+		peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
+			if c == nil {
+				return
+			}
+			candidate := c.ToJSON()
+			candidateMsg, _ := json.Marshal(candidate)
+			conn.WriteMessage(websocket.TextMessage, candidateMsg)
+		})
+
+		// Wait for the offer from the browser
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			log.Println("Error reading offer:", err)
+			return
+		}
+		var offer webrtc.SessionDescription
+		if err = json.Unmarshal(msg, &offer); err != nil {
+			log.Println("Error unmarshalling offer:", err)
+			return
+		}
+		if err = peerConnection.SetRemoteDescription(offer); err != nil {
+			log.Println("Error setting remote description:", err)
+			return
+		}
+
+		// Create and send an answer back to the client
+		answer, err := peerConnection.CreateAnswer(nil)
+		if err != nil {
+			log.Println("Error creating answer:", err)
+			return
+		}
+		if err = peerConnection.SetLocalDescription(answer); err != nil {
+			log.Println("Error setting local description:", err)
+			return
+		}
+		answerMsg, _ := json.Marshal(answer)
+		conn.WriteMessage(websocket.TextMessage, answerMsg)
+
+		// Start a goroutine to read RTP packets from UDP for the video track (port 5004)
+		go func() {
+			videoConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 5004})
+			if err != nil {
+				log.Println("Error listening for video RTP:", err)
+				return
+			}
+			defer videoConn.Close()
+			buf := make([]byte, 1500)
+			for {
+				n, _, err := videoConn.ReadFrom(buf)
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					log.Println("Error reading video RTP:", err)
+					continue
+				}
+				packet := &rtp.Packet{}
+				if err := packet.Unmarshal(buf[:n]); err != nil {
+					log.Println("Error unmarshalling video RTP packet:", err)
+					continue
+				}
+				if err = videoTrack.WriteRTP(packet); err != nil {
+					log.Println("Error writing video RTP to track:", err)
+				}
+			}
+		}()
+
+		// Start a goroutine to read RTP packets from UDP for the audio track (port 5006)
+		go func() {
+			audioConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 5006})
+			if err != nil {
+				log.Println("Error listening for audio RTP:", err)
+				return
+			}
+			defer audioConn.Close()
+			buf := make([]byte, 1500)
+			for {
+				n, _, err := audioConn.ReadFrom(buf)
+				if err != nil {
+					if err == io.EOF {
+						break
+					}
+					log.Println("Error reading audio RTP:", err)
+					continue
+				}
+				packet := &rtp.Packet{}
+				if err := packet.Unmarshal(buf[:n]); err != nil {
+					log.Println("Error unmarshalling audio RTP packet:", err)
+					continue
+				}
+				if err = audioTrack.WriteRTP(packet); err != nil {
+					log.Println("Error writing audio RTP to track:", err)
+				}
+			}
+		}()
+
+		// Keep the WebSocket connection open
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				log.Println("WebSocket closed:", err)
+				break
 			}
 		}
 	})
 
-	// Wait for the offer to be pasted
-	offer := webrtc.SessionDescription{}
-	session := "eyJ0eXBlIjoib2ZmZXIiLCJzZHAiOiJ2PTBcclxubz0tIDc5NTE5NDIwODgzODUxMzYzMzQgMiBJTiBJUDQgMTI3LjAuMC4xXHJcbnM9LVxyXG50PTAgMFxyXG5hPWdyb3VwOkJVTkRMRSAwIDEgMlxyXG5hPWV4dG1hcC1hbGxvdy1taXhlZFxyXG5hPW1zaWQtc2VtYW50aWM6IFdNU1xyXG5tPWF1ZGlvIDI2MDI2IFVEUC9UTFMvUlRQL1NBVlBGIDExMSA2MyA5IDAgOCAxMyAxMTAgMTI2XHJcbmM9SU4gSVA0IDkzLjEwNi4xOTEuNTVcclxuYT1ydGNwOjkgSU4gSVA0IDAuMC4wLjBcclxuYT1jYW5kaWRhdGU6NTcxOTQzOTk2IDEgdWRwIDIxMTM5MzcxNTEgMWJjMGFjZDAtZThkNS00N2M5LWI1YjUtOWQ4ZWFhYTE1NjVkLmxvY2FsIDU0MjAyIHR5cCBob3N0IGdlbmVyYXRpb24gMCBuZXR3b3JrLWNvc3QgOTk5XHJcbmE9Y2FuZGlkYXRlOjM5MjkzMjA5NDggMSB1ZHAgMTY3NzcyOTUzNSA5My4xMDYuMTkxLjU1IDI2MDI2IHR5cCBzcmZseCByYWRkciAwLjAuMC4wIHJwb3J0IDAgZ2VuZXJhdGlvbiAwIG5ldHdvcmstY29zdCA5OTlcclxuYT1pY2UtdWZyYWc6dEF1clxyXG5hPWljZS1wd2Q6S2RyZzErQVE2VSswZXJTTmV2Z1hxZkRPXHJcbmE9aWNlLW9wdGlvbnM6dHJpY2tsZVxyXG5hPWZpbmdlcnByaW50OnNoYS0yNTYgQTQ6MUY6QzA6QTA6MDI6Njk6NjY6M0M6NkE6REM6Rjc6QTY6RkM6RUM6ODI6OTc6QjM6OTE6NDI6Qzk6ODY6QzM6NzM6NkY6QkU6QTU6N0I6MDk6MkY6Q0I6MjE6QzFcclxuYT1zZXR1cDphY3RwYXNzXHJcbmE9bWlkOjBcclxuYT1leHRtYXA6MSB1cm46aWV0ZjpwYXJhbXM6cnRwLWhkcmV4dDpzc3JjLWF1ZGlvLWxldmVsXHJcbmE9ZXh0bWFwOjIgaHR0cDovL3d3dy53ZWJydGMub3JnL2V4cGVyaW1lbnRzL3J0cC1oZHJleHQvYWJzLXNlbmQtdGltZVxyXG5hPWV4dG1hcDozIGh0dHA6Ly93d3cuaWV0Zi5vcmcvaWQvZHJhZnQtaG9sbWVyLXJtY2F0LXRyYW5zcG9ydC13aWRlLWNjLWV4dGVuc2lvbnMtMDFcclxuYT1leHRtYXA6NCB1cm46aWV0ZjpwYXJhbXM6cnRwLWhkcmV4dDpzZGVzOm1pZFxyXG5hPXJlY3Zvbmx5XHJcbmE9cnRjcC1tdXhcclxuYT1ydGNwLXJzaXplXHJcbmE9cnRwbWFwOjExMSBvcHVzLzQ4MDAwLzJcclxuYT1ydGNwLWZiOjExMSB0cmFuc3BvcnQtY2NcclxuYT1mbXRwOjExMSBtaW5wdGltZT0xMDt1c2VpbmJhbmRmZWM9MVxyXG5hPXJ0cG1hcDo2MyByZWQvNDgwMDAvMlxyXG5hPWZtdHA6NjMgMTExLzExMVxyXG5hPXJ0cG1hcDo5IEc3MjIvODAwMFxyXG5hPXJ0cG1hcDowIFBDTVUvODAwMFxyXG5hPXJ0cG1hcDo4IFBDTUEvODAwMFxyXG5hPXJ0cG1hcDoxMyBDTi84MDAwXHJcbmE9cnRwbWFwOjExMCB0ZWxlcGhvbmUtZXZlbnQvNDgwMDBcclxuYT1ydHBtYXA6MTI2IHRlbGVwaG9uZS1ldmVudC84MDAwXHJcbm09dmlkZW8gMjU4NDYgVURQL1RMUy9SVFAvU0FWUEYgOTYgOTcgOTggOTkgMTAwIDEwMSAzNSAzNiAzNyAzOCAxMDMgMTA0IDEwNyAxMDggMTA5IDExNCAxMTUgMTE2IDExNyAxMTggMzkgNDAgNDEgNDIgNDMgNDQgNDUgNDYgNDcgNDggMTE5IDEyMCAxMjEgMTIyIDEyMyAxMjQgMTI1IDQ5XHJcbmM9SU4gSVA0IDkzLjEwNi4xOTEuNTVcclxuYT1ydGNwOjkgSU4gSVA0IDAuMC4wLjBcclxuYT1jYW5kaWRhdGU6NTcxOTQzOTk2IDEgdWRwIDIxMTM5MzcxNTEgMWJjMGFjZDAtZThkNS00N2M5LWI1YjUtOWQ4ZWFhYTE1NjVkLmxvY2FsIDU0MjA0IHR5cCBob3N0IGdlbmVyYXRpb24gMCBuZXR3b3JrLWNvc3QgOTk5XHJcbmE9Y2FuZGlkYXRlOjM5MjkzMjA5NDggMSB1ZHAgMTY3NzcyOTUzNSA5My4xMDYuMTkxLjU1IDI1ODQ2IHR5cCBzcmZseCByYWRkciAwLjAuMC4wIHJwb3J0IDAgZ2VuZXJhdGlvbiAwIG5ldHdvcmstY29zdCA5OTlcclxuYT1pY2UtdWZyYWc6dEF1clxyXG5hPWljZS1wd2Q6S2RyZzErQVE2VSswZXJTTmV2Z1hxZkRPXHJcbmE9aWNlLW9wdGlvbnM6dHJpY2tsZVxyXG5hPWZpbmdlcnByaW50OnNoYS0yNTYgQTQ6MUY6QzA6QTA6MDI6Njk6NjY6M0M6NkE6REM6Rjc6QTY6RkM6RUM6ODI6OTc6QjM6OTE6NDI6Qzk6ODY6QzM6NzM6NkY6QkU6QTU6N0I6MDk6MkY6Q0I6MjE6QzFcclxuYT1zZXR1cDphY3RwYXNzXHJcbmE9bWlkOjFcclxuYT1leHRtYXA6MTQgdXJuOmlldGY6cGFyYW1zOnJ0cC1oZHJleHQ6dG9mZnNldFxyXG5hPWV4dG1hcDoyIGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L2Ficy1zZW5kLXRpbWVcclxuYT1leHRtYXA6MTMgdXJuOjNncHA6dmlkZW8tb3JpZW50YXRpb25cclxuYT1leHRtYXA6MyBodHRwOi8vd3d3LmlldGYub3JnL2lkL2RyYWZ0LWhvbG1lci1ybWNhdC10cmFuc3BvcnQtd2lkZS1jYy1leHRlbnNpb25zLTAxXHJcbmE9ZXh0bWFwOjUgaHR0cDovL3d3dy53ZWJydGMub3JnL2V4cGVyaW1lbnRzL3J0cC1oZHJleHQvcGxheW91dC1kZWxheVxyXG5hPWV4dG1hcDo2IGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L3ZpZGVvLWNvbnRlbnQtdHlwZVxyXG5hPWV4dG1hcDo3IGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L3ZpZGVvLXRpbWluZ1xyXG5hPWV4dG1hcDo4IGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L2NvbG9yLXNwYWNlXHJcbmE9ZXh0bWFwOjQgdXJuOmlldGY6cGFyYW1zOnJ0cC1oZHJleHQ6c2RlczptaWRcclxuYT1leHRtYXA6MTAgdXJuOmlldGY6cGFyYW1zOnJ0cC1oZHJleHQ6c2RlczpydHAtc3RyZWFtLWlkXHJcbmE9ZXh0bWFwOjExIHVybjppZXRmOnBhcmFtczpydHAtaGRyZXh0OnNkZXM6cmVwYWlyZWQtcnRwLXN0cmVhbS1pZFxyXG5hPXJlY3Zvbmx5XHJcbmE9cnRjcC1tdXhcclxuYT1ydGNwLXJzaXplXHJcbmE9cnRwbWFwOjk2IFZQOC85MDAwMFxyXG5hPXJ0Y3AtZmI6OTYgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjo5NiB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjk2IGNjbSBmaXJcclxuYT1ydGNwLWZiOjk2IG5hY2tcclxuYT1ydGNwLWZiOjk2IG5hY2sgcGxpXHJcbmE9cnRwbWFwOjk3IHJ0eC85MDAwMFxyXG5hPWZtdHA6OTcgYXB0PTk2XHJcbmE9cnRwbWFwOjk4IFZQOS85MDAwMFxyXG5hPXJ0Y3AtZmI6OTggZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjo5OCB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjk4IGNjbSBmaXJcclxuYT1ydGNwLWZiOjk4IG5hY2tcclxuYT1ydGNwLWZiOjk4IG5hY2sgcGxpXHJcbmE9Zm10cDo5OCBwcm9maWxlLWlkPTBcclxuYT1ydHBtYXA6OTkgcnR4LzkwMDAwXHJcbmE9Zm10cDo5OSBhcHQ9OThcclxuYT1ydHBtYXA6MTAwIFZQOS85MDAwMFxyXG5hPXJ0Y3AtZmI6MTAwIGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MTAwIHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MTAwIGNjbSBmaXJcclxuYT1ydGNwLWZiOjEwMCBuYWNrXHJcbmE9cnRjcC1mYjoxMDAgbmFjayBwbGlcclxuYT1mbXRwOjEwMCBwcm9maWxlLWlkPTJcclxuYT1ydHBtYXA6MTAxIHJ0eC85MDAwMFxyXG5hPWZtdHA6MTAxIGFwdD0xMDBcclxuYT1ydHBtYXA6MzUgVlA5LzkwMDAwXHJcbmE9cnRjcC1mYjozNSBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjM1IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MzUgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MzUgbmFja1xyXG5hPXJ0Y3AtZmI6MzUgbmFjayBwbGlcclxuYT1mbXRwOjM1IHByb2ZpbGUtaWQ9MVxyXG5hPXJ0cG1hcDozNiBydHgvOTAwMDBcclxuYT1mbXRwOjM2IGFwdD0zNVxyXG5hPXJ0cG1hcDozNyBWUDkvOTAwMDBcclxuYT1ydGNwLWZiOjM3IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MzcgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjozNyBjY20gZmlyXHJcbmE9cnRjcC1mYjozNyBuYWNrXHJcbmE9cnRjcC1mYjozNyBuYWNrIHBsaVxyXG5hPWZtdHA6MzcgcHJvZmlsZS1pZD0zXHJcbmE9cnRwbWFwOjM4IHJ0eC85MDAwMFxyXG5hPWZtdHA6MzggYXB0PTM3XHJcbmE9cnRwbWFwOjEwMyBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjoxMDMgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjoxMDMgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjoxMDMgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MTAzIG5hY2tcclxuYT1ydGNwLWZiOjEwMyBuYWNrIHBsaVxyXG5hPWZtdHA6MTAzIGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTE7cHJvZmlsZS1sZXZlbC1pZD00MjAwMWZcclxuYT1ydHBtYXA6MTA0IHJ0eC85MDAwMFxyXG5hPWZtdHA6MTA0IGFwdD0xMDNcclxuYT1ydHBtYXA6MTA3IEgyNjQvOTAwMDBcclxuYT1ydGNwLWZiOjEwNyBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjEwNyB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjEwNyBjY20gZmlyXHJcbmE9cnRjcC1mYjoxMDcgbmFja1xyXG5hPXJ0Y3AtZmI6MTA3IG5hY2sgcGxpXHJcbmE9Zm10cDoxMDcgbGV2ZWwtYXN5bW1ldHJ5LWFsbG93ZWQ9MTtwYWNrZXRpemF0aW9uLW1vZGU9MDtwcm9maWxlLWxldmVsLWlkPTQyMDAxZlxyXG5hPXJ0cG1hcDoxMDggcnR4LzkwMDAwXHJcbmE9Zm10cDoxMDggYXB0PTEwN1xyXG5hPXJ0cG1hcDoxMDkgSDI2NC85MDAwMFxyXG5hPXJ0Y3AtZmI6MTA5IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MTA5IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MTA5IGNjbSBmaXJcclxuYT1ydGNwLWZiOjEwOSBuYWNrXHJcbmE9cnRjcC1mYjoxMDkgbmFjayBwbGlcclxuYT1mbXRwOjEwOSBsZXZlbC1hc3ltbWV0cnktYWxsb3dlZD0xO3BhY2tldGl6YXRpb24tbW9kZT0xO3Byb2ZpbGUtbGV2ZWwtaWQ9NDJlMDFmXHJcbmE9cnRwbWFwOjExNCBydHgvOTAwMDBcclxuYT1mbXRwOjExNCBhcHQ9MTA5XHJcbmE9cnRwbWFwOjExNSBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjoxMTUgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjoxMTUgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjoxMTUgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MTE1IG5hY2tcclxuYT1ydGNwLWZiOjExNSBuYWNrIHBsaVxyXG5hPWZtdHA6MTE1IGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTA7cHJvZmlsZS1sZXZlbC1pZD00MmUwMWZcclxuYT1ydHBtYXA6MTE2IHJ0eC85MDAwMFxyXG5hPWZtdHA6MTE2IGFwdD0xMTVcclxuYT1ydHBtYXA6MTE3IEgyNjQvOTAwMDBcclxuYT1ydGNwLWZiOjExNyBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjExNyB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjExNyBjY20gZmlyXHJcbmE9cnRjcC1mYjoxMTcgbmFja1xyXG5hPXJ0Y3AtZmI6MTE3IG5hY2sgcGxpXHJcbmE9Zm10cDoxMTcgbGV2ZWwtYXN5bW1ldHJ5LWFsbG93ZWQ9MTtwYWNrZXRpemF0aW9uLW1vZGU9MTtwcm9maWxlLWxldmVsLWlkPTRkMDAxZlxyXG5hPXJ0cG1hcDoxMTggcnR4LzkwMDAwXHJcbmE9Zm10cDoxMTggYXB0PTExN1xyXG5hPXJ0cG1hcDozOSBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjozOSBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjM5IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MzkgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MzkgbmFja1xyXG5hPXJ0Y3AtZmI6MzkgbmFjayBwbGlcclxuYT1mbXRwOjM5IGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTA7cHJvZmlsZS1sZXZlbC1pZD00ZDAwMWZcclxuYT1ydHBtYXA6NDAgcnR4LzkwMDAwXHJcbmE9Zm10cDo0MCBhcHQ9MzlcclxuYT1ydHBtYXA6NDEgSDI2NC85MDAwMFxyXG5hPXJ0Y3AtZmI6NDEgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjo0MSB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjQxIGNjbSBmaXJcclxuYT1ydGNwLWZiOjQxIG5hY2tcclxuYT1ydGNwLWZiOjQxIG5hY2sgcGxpXHJcbmE9Zm10cDo0MSBsZXZlbC1hc3ltbWV0cnktYWxsb3dlZD0xO3BhY2tldGl6YXRpb24tbW9kZT0xO3Byb2ZpbGUtbGV2ZWwtaWQ9ZjQwMDFmXHJcbmE9cnRwbWFwOjQyIHJ0eC85MDAwMFxyXG5hPWZtdHA6NDIgYXB0PTQxXHJcbmE9cnRwbWFwOjQzIEgyNjQvOTAwMDBcclxuYT1ydGNwLWZiOjQzIGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDMgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjo0MyBjY20gZmlyXHJcbmE9cnRjcC1mYjo0MyBuYWNrXHJcbmE9cnRjcC1mYjo0MyBuYWNrIHBsaVxyXG5hPWZtdHA6NDMgbGV2ZWwtYXN5bW1ldHJ5LWFsbG93ZWQ9MTtwYWNrZXRpemF0aW9uLW1vZGU9MDtwcm9maWxlLWxldmVsLWlkPWY0MDAxZlxyXG5hPXJ0cG1hcDo0NCBydHgvOTAwMDBcclxuYT1mbXRwOjQ0IGFwdD00M1xyXG5hPXJ0cG1hcDo0NSBBVjEvOTAwMDBcclxuYT1ydGNwLWZiOjQ1IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDUgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjo0NSBjY20gZmlyXHJcbmE9cnRjcC1mYjo0NSBuYWNrXHJcbmE9cnRjcC1mYjo0NSBuYWNrIHBsaVxyXG5hPWZtdHA6NDUgbGV2ZWwtaWR4PTU7cHJvZmlsZT0wO3RpZXI9MFxyXG5hPXJ0cG1hcDo0NiBydHgvOTAwMDBcclxuYT1mbXRwOjQ2IGFwdD00NVxyXG5hPXJ0cG1hcDo0NyBBVjEvOTAwMDBcclxuYT1ydGNwLWZiOjQ3IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDcgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjo0NyBjY20gZmlyXHJcbmE9cnRjcC1mYjo0NyBuYWNrXHJcbmE9cnRjcC1mYjo0NyBuYWNrIHBsaVxyXG5hPWZtdHA6NDcgbGV2ZWwtaWR4PTU7cHJvZmlsZT0xO3RpZXI9MFxyXG5hPXJ0cG1hcDo0OCBydHgvOTAwMDBcclxuYT1mbXRwOjQ4IGFwdD00N1xyXG5hPXJ0cG1hcDoxMTkgSDI2NC85MDAwMFxyXG5hPXJ0Y3AtZmI6MTE5IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MTE5IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MTE5IGNjbSBmaXJcclxuYT1ydGNwLWZiOjExOSBuYWNrXHJcbmE9cnRjcC1mYjoxMTkgbmFjayBwbGlcclxuYT1mbXRwOjExOSBsZXZlbC1hc3ltbWV0cnktYWxsb3dlZD0xO3BhY2tldGl6YXRpb24tbW9kZT0xO3Byb2ZpbGUtbGV2ZWwtaWQ9NjQwMDFmXHJcbmE9cnRwbWFwOjEyMCBydHgvOTAwMDBcclxuYT1mbXRwOjEyMCBhcHQ9MTE5XHJcbmE9cnRwbWFwOjEyMSBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjoxMjEgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjoxMjEgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjoxMjEgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MTIxIG5hY2tcclxuYT1ydGNwLWZiOjEyMSBuYWNrIHBsaVxyXG5hPWZtdHA6MTIxIGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTA7cHJvZmlsZS1sZXZlbC1pZD02NDAwMWZcclxuYT1ydHBtYXA6MTIyIHJ0eC85MDAwMFxyXG5hPWZtdHA6MTIyIGFwdD0xMjFcclxuYT1ydHBtYXA6MTIzIHJlZC85MDAwMFxyXG5hPXJ0cG1hcDoxMjQgcnR4LzkwMDAwXHJcbmE9Zm10cDoxMjQgYXB0PTEyM1xyXG5hPXJ0cG1hcDoxMjUgdWxwZmVjLzkwMDAwXHJcbmE9cnRwbWFwOjQ5IGZsZXhmZWMtMDMvOTAwMDBcclxuYT1ydGNwLWZiOjQ5IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDkgdHJhbnNwb3J0LWNjXHJcbmE9Zm10cDo0OSByZXBhaXItd2luZG93PTEwMDAwMDAwXHJcbm09dmlkZW8gMjU3MTAgVURQL1RMUy9SVFAvU0FWUEYgOTYgOTcgOTggOTkgMTAwIDEwMSAzNSAzNiAzNyAzOCAxMDMgMTA0IDEwNyAxMDggMTA5IDExNCAxMTUgMTE2IDExNyAxMTggMzkgNDAgNDEgNDIgNDMgNDQgNDUgNDYgNDcgNDggMTE5IDEyMCAxMjEgMTIyIDEyMyAxMjQgMTI1IDQ5XHJcbmM9SU4gSVA0IDkzLjEwNi4xOTEuNTVcclxuYT1ydGNwOjkgSU4gSVA0IDAuMC4wLjBcclxuYT1jYW5kaWRhdGU6NTcxOTQzOTk2IDEgdWRwIDIxMTM5MzcxNTEgMWJjMGFjZDAtZThkNS00N2M5LWI1YjUtOWQ4ZWFhYTE1NjVkLmxvY2FsIDU0MjA2IHR5cCBob3N0IGdlbmVyYXRpb24gMCBuZXR3b3JrLWNvc3QgOTk5XHJcbmE9Y2FuZGlkYXRlOjM5MjkzMjA5NDggMSB1ZHAgMTY3NzcyOTUzNSA5My4xMDYuMTkxLjU1IDI1NzEwIHR5cCBzcmZseCByYWRkciAwLjAuMC4wIHJwb3J0IDAgZ2VuZXJhdGlvbiAwIG5ldHdvcmstY29zdCA5OTlcclxuYT1pY2UtdWZyYWc6dEF1clxyXG5hPWljZS1wd2Q6S2RyZzErQVE2VSswZXJTTmV2Z1hxZkRPXHJcbmE9aWNlLW9wdGlvbnM6dHJpY2tsZVxyXG5hPWZpbmdlcnByaW50OnNoYS0yNTYgQTQ6MUY6QzA6QTA6MDI6Njk6NjY6M0M6NkE6REM6Rjc6QTY6RkM6RUM6ODI6OTc6QjM6OTE6NDI6Qzk6ODY6QzM6NzM6NkY6QkU6QTU6N0I6MDk6MkY6Q0I6MjE6QzFcclxuYT1zZXR1cDphY3RwYXNzXHJcbmE9bWlkOjJcclxuYT1leHRtYXA6MTQgdXJuOmlldGY6cGFyYW1zOnJ0cC1oZHJleHQ6dG9mZnNldFxyXG5hPWV4dG1hcDoyIGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L2Ficy1zZW5kLXRpbWVcclxuYT1leHRtYXA6MTMgdXJuOjNncHA6dmlkZW8tb3JpZW50YXRpb25cclxuYT1leHRtYXA6MyBodHRwOi8vd3d3LmlldGYub3JnL2lkL2RyYWZ0LWhvbG1lci1ybWNhdC10cmFuc3BvcnQtd2lkZS1jYy1leHRlbnNpb25zLTAxXHJcbmE9ZXh0bWFwOjUgaHR0cDovL3d3dy53ZWJydGMub3JnL2V4cGVyaW1lbnRzL3J0cC1oZHJleHQvcGxheW91dC1kZWxheVxyXG5hPWV4dG1hcDo2IGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L3ZpZGVvLWNvbnRlbnQtdHlwZVxyXG5hPWV4dG1hcDo3IGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L3ZpZGVvLXRpbWluZ1xyXG5hPWV4dG1hcDo4IGh0dHA6Ly93d3cud2VicnRjLm9yZy9leHBlcmltZW50cy9ydHAtaGRyZXh0L2NvbG9yLXNwYWNlXHJcbmE9ZXh0bWFwOjQgdXJuOmlldGY6cGFyYW1zOnJ0cC1oZHJleHQ6c2RlczptaWRcclxuYT1leHRtYXA6MTAgdXJuOmlldGY6cGFyYW1zOnJ0cC1oZHJleHQ6c2RlczpydHAtc3RyZWFtLWlkXHJcbmE9ZXh0bWFwOjExIHVybjppZXRmOnBhcmFtczpydHAtaGRyZXh0OnNkZXM6cmVwYWlyZWQtcnRwLXN0cmVhbS1pZFxyXG5hPXJlY3Zvbmx5XHJcbmE9cnRjcC1tdXhcclxuYT1ydGNwLXJzaXplXHJcbmE9cnRwbWFwOjk2IFZQOC85MDAwMFxyXG5hPXJ0Y3AtZmI6OTYgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjo5NiB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjk2IGNjbSBmaXJcclxuYT1ydGNwLWZiOjk2IG5hY2tcclxuYT1ydGNwLWZiOjk2IG5hY2sgcGxpXHJcbmE9cnRwbWFwOjk3IHJ0eC85MDAwMFxyXG5hPWZtdHA6OTcgYXB0PTk2XHJcbmE9cnRwbWFwOjk4IFZQOS85MDAwMFxyXG5hPXJ0Y3AtZmI6OTggZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjo5OCB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjk4IGNjbSBmaXJcclxuYT1ydGNwLWZiOjk4IG5hY2tcclxuYT1ydGNwLWZiOjk4IG5hY2sgcGxpXHJcbmE9Zm10cDo5OCBwcm9maWxlLWlkPTBcclxuYT1ydHBtYXA6OTkgcnR4LzkwMDAwXHJcbmE9Zm10cDo5OSBhcHQ9OThcclxuYT1ydHBtYXA6MTAwIFZQOS85MDAwMFxyXG5hPXJ0Y3AtZmI6MTAwIGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MTAwIHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MTAwIGNjbSBmaXJcclxuYT1ydGNwLWZiOjEwMCBuYWNrXHJcbmE9cnRjcC1mYjoxMDAgbmFjayBwbGlcclxuYT1mbXRwOjEwMCBwcm9maWxlLWlkPTJcclxuYT1ydHBtYXA6MTAxIHJ0eC85MDAwMFxyXG5hPWZtdHA6MTAxIGFwdD0xMDBcclxuYT1ydHBtYXA6MzUgVlA5LzkwMDAwXHJcbmE9cnRjcC1mYjozNSBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjM1IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MzUgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MzUgbmFja1xyXG5hPXJ0Y3AtZmI6MzUgbmFjayBwbGlcclxuYT1mbXRwOjM1IHByb2ZpbGUtaWQ9MVxyXG5hPXJ0cG1hcDozNiBydHgvOTAwMDBcclxuYT1mbXRwOjM2IGFwdD0zNVxyXG5hPXJ0cG1hcDozNyBWUDkvOTAwMDBcclxuYT1ydGNwLWZiOjM3IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MzcgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjozNyBjY20gZmlyXHJcbmE9cnRjcC1mYjozNyBuYWNrXHJcbmE9cnRjcC1mYjozNyBuYWNrIHBsaVxyXG5hPWZtdHA6MzcgcHJvZmlsZS1pZD0zXHJcbmE9cnRwbWFwOjM4IHJ0eC85MDAwMFxyXG5hPWZtdHA6MzggYXB0PTM3XHJcbmE9cnRwbWFwOjEwMyBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjoxMDMgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjoxMDMgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjoxMDMgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MTAzIG5hY2tcclxuYT1ydGNwLWZiOjEwMyBuYWNrIHBsaVxyXG5hPWZtdHA6MTAzIGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTE7cHJvZmlsZS1sZXZlbC1pZD00MjAwMWZcclxuYT1ydHBtYXA6MTA0IHJ0eC85MDAwMFxyXG5hPWZtdHA6MTA0IGFwdD0xMDNcclxuYT1ydHBtYXA6MTA3IEgyNjQvOTAwMDBcclxuYT1ydGNwLWZiOjEwNyBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjEwNyB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjEwNyBjY20gZmlyXHJcbmE9cnRjcC1mYjoxMDcgbmFja1xyXG5hPXJ0Y3AtZmI6MTA3IG5hY2sgcGxpXHJcbmE9Zm10cDoxMDcgbGV2ZWwtYXN5bW1ldHJ5LWFsbG93ZWQ9MTtwYWNrZXRpemF0aW9uLW1vZGU9MDtwcm9maWxlLWxldmVsLWlkPTQyMDAxZlxyXG5hPXJ0cG1hcDoxMDggcnR4LzkwMDAwXHJcbmE9Zm10cDoxMDggYXB0PTEwN1xyXG5hPXJ0cG1hcDoxMDkgSDI2NC85MDAwMFxyXG5hPXJ0Y3AtZmI6MTA5IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MTA5IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MTA5IGNjbSBmaXJcclxuYT1ydGNwLWZiOjEwOSBuYWNrXHJcbmE9cnRjcC1mYjoxMDkgbmFjayBwbGlcclxuYT1mbXRwOjEwOSBsZXZlbC1hc3ltbWV0cnktYWxsb3dlZD0xO3BhY2tldGl6YXRpb24tbW9kZT0xO3Byb2ZpbGUtbGV2ZWwtaWQ9NDJlMDFmXHJcbmE9cnRwbWFwOjExNCBydHgvOTAwMDBcclxuYT1mbXRwOjExNCBhcHQ9MTA5XHJcbmE9cnRwbWFwOjExNSBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjoxMTUgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjoxMTUgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjoxMTUgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MTE1IG5hY2tcclxuYT1ydGNwLWZiOjExNSBuYWNrIHBsaVxyXG5hPWZtdHA6MTE1IGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTA7cHJvZmlsZS1sZXZlbC1pZD00MmUwMWZcclxuYT1ydHBtYXA6MTE2IHJ0eC85MDAwMFxyXG5hPWZtdHA6MTE2IGFwdD0xMTVcclxuYT1ydHBtYXA6MTE3IEgyNjQvOTAwMDBcclxuYT1ydGNwLWZiOjExNyBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjExNyB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjExNyBjY20gZmlyXHJcbmE9cnRjcC1mYjoxMTcgbmFja1xyXG5hPXJ0Y3AtZmI6MTE3IG5hY2sgcGxpXHJcbmE9Zm10cDoxMTcgbGV2ZWwtYXN5bW1ldHJ5LWFsbG93ZWQ9MTtwYWNrZXRpemF0aW9uLW1vZGU9MTtwcm9maWxlLWxldmVsLWlkPTRkMDAxZlxyXG5hPXJ0cG1hcDoxMTggcnR4LzkwMDAwXHJcbmE9Zm10cDoxMTggYXB0PTExN1xyXG5hPXJ0cG1hcDozOSBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjozOSBnb29nLXJlbWJcclxuYT1ydGNwLWZiOjM5IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MzkgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MzkgbmFja1xyXG5hPXJ0Y3AtZmI6MzkgbmFjayBwbGlcclxuYT1mbXRwOjM5IGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTA7cHJvZmlsZS1sZXZlbC1pZD00ZDAwMWZcclxuYT1ydHBtYXA6NDAgcnR4LzkwMDAwXHJcbmE9Zm10cDo0MCBhcHQ9MzlcclxuYT1ydHBtYXA6NDEgSDI2NC85MDAwMFxyXG5hPXJ0Y3AtZmI6NDEgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjo0MSB0cmFuc3BvcnQtY2NcclxuYT1ydGNwLWZiOjQxIGNjbSBmaXJcclxuYT1ydGNwLWZiOjQxIG5hY2tcclxuYT1ydGNwLWZiOjQxIG5hY2sgcGxpXHJcbmE9Zm10cDo0MSBsZXZlbC1hc3ltbWV0cnktYWxsb3dlZD0xO3BhY2tldGl6YXRpb24tbW9kZT0xO3Byb2ZpbGUtbGV2ZWwtaWQ9ZjQwMDFmXHJcbmE9cnRwbWFwOjQyIHJ0eC85MDAwMFxyXG5hPWZtdHA6NDIgYXB0PTQxXHJcbmE9cnRwbWFwOjQzIEgyNjQvOTAwMDBcclxuYT1ydGNwLWZiOjQzIGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDMgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjo0MyBjY20gZmlyXHJcbmE9cnRjcC1mYjo0MyBuYWNrXHJcbmE9cnRjcC1mYjo0MyBuYWNrIHBsaVxyXG5hPWZtdHA6NDMgbGV2ZWwtYXN5bW1ldHJ5LWFsbG93ZWQ9MTtwYWNrZXRpemF0aW9uLW1vZGU9MDtwcm9maWxlLWxldmVsLWlkPWY0MDAxZlxyXG5hPXJ0cG1hcDo0NCBydHgvOTAwMDBcclxuYT1mbXRwOjQ0IGFwdD00M1xyXG5hPXJ0cG1hcDo0NSBBVjEvOTAwMDBcclxuYT1ydGNwLWZiOjQ1IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDUgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjo0NSBjY20gZmlyXHJcbmE9cnRjcC1mYjo0NSBuYWNrXHJcbmE9cnRjcC1mYjo0NSBuYWNrIHBsaVxyXG5hPWZtdHA6NDUgbGV2ZWwtaWR4PTU7cHJvZmlsZT0wO3RpZXI9MFxyXG5hPXJ0cG1hcDo0NiBydHgvOTAwMDBcclxuYT1mbXRwOjQ2IGFwdD00NVxyXG5hPXJ0cG1hcDo0NyBBVjEvOTAwMDBcclxuYT1ydGNwLWZiOjQ3IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDcgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjo0NyBjY20gZmlyXHJcbmE9cnRjcC1mYjo0NyBuYWNrXHJcbmE9cnRjcC1mYjo0NyBuYWNrIHBsaVxyXG5hPWZtdHA6NDcgbGV2ZWwtaWR4PTU7cHJvZmlsZT0xO3RpZXI9MFxyXG5hPXJ0cG1hcDo0OCBydHgvOTAwMDBcclxuYT1mbXRwOjQ4IGFwdD00N1xyXG5hPXJ0cG1hcDoxMTkgSDI2NC85MDAwMFxyXG5hPXJ0Y3AtZmI6MTE5IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6MTE5IHRyYW5zcG9ydC1jY1xyXG5hPXJ0Y3AtZmI6MTE5IGNjbSBmaXJcclxuYT1ydGNwLWZiOjExOSBuYWNrXHJcbmE9cnRjcC1mYjoxMTkgbmFjayBwbGlcclxuYT1mbXRwOjExOSBsZXZlbC1hc3ltbWV0cnktYWxsb3dlZD0xO3BhY2tldGl6YXRpb24tbW9kZT0xO3Byb2ZpbGUtbGV2ZWwtaWQ9NjQwMDFmXHJcbmE9cnRwbWFwOjEyMCBydHgvOTAwMDBcclxuYT1mbXRwOjEyMCBhcHQ9MTE5XHJcbmE9cnRwbWFwOjEyMSBIMjY0LzkwMDAwXHJcbmE9cnRjcC1mYjoxMjEgZ29vZy1yZW1iXHJcbmE9cnRjcC1mYjoxMjEgdHJhbnNwb3J0LWNjXHJcbmE9cnRjcC1mYjoxMjEgY2NtIGZpclxyXG5hPXJ0Y3AtZmI6MTIxIG5hY2tcclxuYT1ydGNwLWZiOjEyMSBuYWNrIHBsaVxyXG5hPWZtdHA6MTIxIGxldmVsLWFzeW1tZXRyeS1hbGxvd2VkPTE7cGFja2V0aXphdGlvbi1tb2RlPTA7cHJvZmlsZS1sZXZlbC1pZD02NDAwMWZcclxuYT1ydHBtYXA6MTIyIHJ0eC85MDAwMFxyXG5hPWZtdHA6MTIyIGFwdD0xMjFcclxuYT1ydHBtYXA6MTIzIHJlZC85MDAwMFxyXG5hPXJ0cG1hcDoxMjQgcnR4LzkwMDAwXHJcbmE9Zm10cDoxMjQgYXB0PTEyM1xyXG5hPXJ0cG1hcDoxMjUgdWxwZmVjLzkwMDAwXHJcbmE9cnRwbWFwOjQ5IGZsZXhmZWMtMDMvOTAwMDBcclxuYT1ydGNwLWZiOjQ5IGdvb2ctcmVtYlxyXG5hPXJ0Y3AtZmI6NDkgdHJhbnNwb3J0LWNjXHJcbmE9Zm10cDo0OSByZXBhaXItd2luZG93PTEwMDAwMDAwXHJcbiJ9"
-	//decode(readUntilNewline(), &offer)
-	decode(session, &offer)
-
-	// Set the remote SessionDescription
-	if err = peerConnection.SetRemoteDescription(offer); err != nil {
-		panic(err)
-	}
-
-	// Create answer
-	answer, err := peerConnection.CreateAnswer(nil)
-	if err != nil {
-		panic(err)
-	}
-
-	// Create channel that is blocked until ICE Gathering is complete
-	gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
-
-	// Sets the LocalDescription, and starts our UDP listeners
-	if err = peerConnection.SetLocalDescription(answer); err != nil {
-		panic(err)
-	}
-
-	// Block until ICE Gathering is complete, disabling trickle ICE
-	// we do this because we only can exchange one signaling message
-	// in a production application you should exchange ICE Candidates via OnICECandidate
-	<-gatherComplete
-
-	// Output the answer in base64 so we can paste it in browser
-	fmt.Println(encode(peerConnection.LocalDescription()))
-
-}
-
-// JSON encode + base64 a SessionDescription.
-func encode(obj *webrtc.SessionDescription) string {
-	b, err := json.Marshal(obj)
-	if err != nil {
-		panic(err)
-	}
-
-	return base64.StdEncoding.EncodeToString(b)
-}
-
-// Decode a base64 and unmarshal JSON into a SessionDescription.
-func decode(in string, obj *webrtc.SessionDescription) {
-	b, err := base64.StdEncoding.DecodeString(in)
-	if err != nil {
-		panic(err)
-	}
-
-	if err = json.Unmarshal(b, obj); err != nil {
-		panic(err)
+	log.Println("Server started at :8080")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatal(err)
 	}
 }

@@ -1,72 +1,53 @@
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
     <meta charset="utf-8">
-    <title>Simple WebRTC Player</title>
+    <title>WebRTC RTP Stream</title>
 </head>
 <body>
-Browser base64 Session Description<br/>
-<textarea id="localSessionDescription" readonly="true"></textarea> <br/>
-
-Golang base64 Session Description<br/>
-<textarea id="remoteSessionDescription"> </textarea> <br/>
-<button onclick="window.startSession()"> Start Session</button>
-<br/>
-
-<br/>
-
-Video<br/>
-<div id="remoteVideos"></div>
-<br/>
-
-Logs<br/>
-<div id="div"></div>
+<h1>WebRTC RTP Stream</h1>
+<video id="video" autoplay playsinline controls style="width: 80%; max-width: 800px;"></video>
 <script>
-    let pc = new RTCPeerConnection({
-        iceServers: [
-            {
-                urls: 'stun:stun.l.google.com:19302'
+    // Create a new RTCPeerConnection
+    const pc = new RTCPeerConnection();
+    const ws = new WebSocket("ws://" + location.host + "/ws");
+
+    // Handle incoming WebSocket messages (answer and ICE candidates)
+    ws.onmessage = async (message) => {
+        const data = JSON.parse(message.data);
+        if (data.type === "answer") {
+            await pc.setRemoteDescription(data);
+        } else if (data.candidate) {
+            try {
+                await pc.addIceCandidate(data);
+            } catch (e) {
+                console.error("Error adding ICE candidate:", e);
             }
-        ]
-    })
-    let log = msg => {
-        document.getElementById('div').innerHTML += msg + '<br>'
-    }
+        }
+    };
 
-    pc.ontrack = function (event) {
-        var el = document.createElement(event.track.kind)
-        el.srcObject = event.streams[0]
-        el.autoplay = true
-        el.controls = true
-
-        document.getElementById('remoteVideos').appendChild(el)
-    }
-
-    pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
+    // Send ICE candidates to the server
     pc.onicecandidate = event => {
-        if (event.candidate === null) {
-            document.getElementById('localSessionDescription').value = btoa(JSON.stringify(pc.localDescription))
+        if (event.candidate) {
+            ws.send(JSON.stringify(event.candidate));
         }
+    };
+
+    // When tracks arrive, set the video element's source
+    pc.ontrack = event => {
+        const video = document.getElementById("video");
+        if (video.srcObject !== event.streams[0]) {
+            video.srcObject = event.streams[0];
+        }
+    };
+
+    // Create an offer and send it to the server
+    async function negotiate() {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify(pc.localDescription));
     }
-
-    // Offer to receive 1 audio, and 2 video tracks
-    pc.addTransceiver('audio', {'direction': 'recvonly'})
-    pc.addTransceiver('video', {'direction': 'recvonly'})
-    pc.addTransceiver('video', {'direction': 'recvonly'})
-    pc.createOffer().then(d => pc.setLocalDescription(d)).catch(log)
-
-    window.startSession = () => {
-        let sd = document.getElementById('remoteSessionDescription').value
-        if (sd === '') {
-            return alert('Session Description must not be empty')
-        }
-
-        try {
-            pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(atob(sd))))
-        } catch (e) {
-            alert(e)
-        }
-    }
-
+    negotiate();
 </script>
 </body>
 </html>
