@@ -3,6 +3,7 @@ module transtream
 go 1.23.6
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/pion/rtp v1.8.13
 	github.com/pion/webrtc/v3 v3.3.5
 )

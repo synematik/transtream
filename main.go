@@ -1,170 +1,300 @@
 package main
 
 import (
-	"encoding/json"
-	"io/ioutil"
+	"crypto/rand"
+	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"sync"
 
+	"github.com/gorilla/websocket"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
 )
 
 var (
-	// Protects the list of active tracks.
-	tracksMu sync.RWMutex
-	// Global list of WebRTC tracks where RTP packets will be forwarded.
-	tracks []*webrtc.TrackLocalStaticRTP
+	upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	clients   = make(map[*websocket.Conn]*Client)
+	clientsMu sync.Mutex
 )
 
-// rtpReceiver listens on UDP port 5004 for incoming RTP packets from FFmpeg.
-func rtpReceiver() {
-	addr, err := net.ResolveUDPAddr("udp", ":5004")
-	if err != nil {
-		log.Fatal(err)
-	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	buf := make([]byte, 1500)
-	for {
-		n, _, err := conn.ReadFrom(buf)
-		if err != nil {
-			log.Println("Error reading from UDP:", err)
-			continue
-		}
-		packet := &rtp.Packet{}
-		if err := packet.Unmarshal(buf[:n]); err != nil {
-			log.Println("Error unmarshalling RTP packet:", err)
-			continue
-		}
-		// Broadcast the RTP packet to every active WebRTC track.
-		tracksMu.RLock()
-		for _, track := range tracks {
-			if err := track.WriteRTP(packet); err != nil {
-				log.Println("Error writing RTP to track:", err)
-			}
-		}
-		tracksMu.RUnlock()
-	}
-}
-
-// Offer represents an SDP offer from the client.
-type Offer struct {
-	SDP string `json:"sdp"`
-}
-
-// Answer represents the SDP answer returned to the client.
-type Answer struct {
-	SDP string `json:"sdp"`
-}
-
-// offerHandler handles the signaling exchange: it receives an SDP offer,
-// creates a PeerConnection with a new video track, sets the remote description,
-// and returns an SDP answer.
-func offerHandler(w http.ResponseWriter, r *http.Request) {
-	var offer Offer
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
-		return
-	}
-	if err := json.Unmarshal(body, &offer); err != nil {
-		http.Error(w, "failed to parse JSON", http.StatusBadRequest)
-		return
-	}
-
-	// Create a new PeerConnection.
-	peerConnection, err := webrtc.NewPeerConnection(webrtc.Configuration{})
-	if err != nil {
-		http.Error(w, "failed to create peer connection", http.StatusInternalServerError)
-		return
-	}
-
-	// Create a video track. (MIME type must match what FFmpeg outputs, e.g. video/H264.)
-	track, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
-		MimeType: "video/H264",
-	}, "video", "pion")
-	if err != nil {
-		http.Error(w, "failed to create track", http.StatusInternalServerError)
-		return
-	}
-
-	// Add the track to the PeerConnection.
-	_, err = peerConnection.AddTrack(track)
-	if err != nil {
-		http.Error(w, "failed to add track", http.StatusInternalServerError)
-		return
-	}
-
-	// Add this track to the global list so that RTP packets are forwarded to it.
-	tracksMu.Lock()
-	tracks = append(tracks, track)
-	tracksMu.Unlock()
-
-	// Set the remote SDP offer.
-	offerSD := webrtc.SessionDescription{
-		Type: webrtc.SDPTypeOffer,
-		SDP:  offer.SDP,
-	}
-	if err := peerConnection.SetRemoteDescription(offerSD); err != nil {
-		log.Println(err)
-		http.Error(w, "failed to set remote description", http.StatusInternalServerError)
-		return
-	}
-
-	// Create the SDP answer.
-	answer, err := peerConnection.CreateAnswer(nil)
-	if err != nil {
-		http.Error(w, "failed to create answer", http.StatusInternalServerError)
-		return
-	}
-	if err = peerConnection.SetLocalDescription(answer); err != nil {
-		http.Error(w, "failed to set local description", http.StatusInternalServerError)
-		return
-	}
-
-	// Wait for ICE gathering to complete.
-	gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
-	<-gatherComplete
-
-	// Return the SDP answer.
-	resp := Answer{
-		SDP: peerConnection.LocalDescription().SDP,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-
-	// Cleanup: Remove the track when the connection closes.
-	peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Println("Connection state has changed:", state.String())
-		if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed {
-			tracksMu.Lock()
-			for i, t := range tracks {
-				if t == track {
-					tracks = append(tracks[:i], tracks[i+1:]...)
-					break
-				}
-			}
-			tracksMu.Unlock()
-		}
-	})
+type Client struct {
+	pc         *webrtc.PeerConnection
+	videoTrack *webrtc.TrackLocalStaticRTP
+	audioTrack *webrtc.TrackLocalStaticRTP
+	videoSeq   uint16
+	audioSeq   uint16
 }
 
 func main() {
-	// Start the RTP receiver in a separate goroutine.
-	go rtpReceiver()
+	// Start RTP listeners for video and audio
+	go func() {
+		if err := startRTPListener(5000, "video"); err != nil {
+			log.Fatalf("Failed to start video RTP listener: %v", err)
+		}
+	}()
+	go func() {
+		if err := startRTPListener(5002, "audio"); err != nil {
+			log.Fatalf("Failed to start audio RTP listener: %v", err)
+		}
+	}()
 
-	// Serve static files (the HTML page) from the ./static folder.
-	http.Handle("/", http.FileServer(http.Dir("./")))
-	// HTTP endpoint for WebRTC signaling.
-	http.HandleFunc("/offer", offerHandler)
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer func() {
+			if err := conn.Close(); err != nil {
+				log.Printf("WebSocket close error: %v", err)
+			}
+		}()
 
-	log.Println("Server started on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+		// Create media engine with our codecs
+		mediaEngine := &webrtc.MediaEngine{}
+		if err := mediaEngine.RegisterCodec(
+			webrtc.RTPCodecParameters{
+				RTPCodecCapability: webrtc.RTPCodecCapability{
+					MimeType:  "video/H264",
+					ClockRate: 90000,
+				},
+				PayloadType: 96,
+			},
+			webrtc.RTPCodecTypeVideo,
+		); err != nil {
+			log.Printf("Failed to register video codec: %v", err)
+			return
+		}
+
+		if err := mediaEngine.RegisterCodec(
+			webrtc.RTPCodecParameters{
+				RTPCodecCapability: webrtc.RTPCodecCapability{
+					MimeType:  "audio/opus",
+					ClockRate: 48000,
+					Channels:  2,
+				},
+				PayloadType: 111,
+			},
+			webrtc.RTPCodecTypeAudio,
+		); err != nil {
+			log.Printf("Failed to register audio codec: %v", err)
+			return
+		}
+
+		// Create API with media engine
+		api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
+		config := webrtc.Configuration{
+			ICEServers: []webrtc.ICEServer{
+				{
+					URLs: []string{"stun:stun.l.google.com:19302"},
+				},
+			},
+		}
+
+		peerConnection, err := api.NewPeerConnection(config)
+		if err != nil {
+			log.Printf("Failed to create peer connection: %v", err)
+			return
+		}
+
+		// Create video track
+		videoTrack, err := webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{MimeType: "video/H264", ClockRate: 90000},
+			"video",
+			"stream",
+		)
+		if err != nil {
+			log.Printf("Failed to create video track: %v", err)
+			peerConnection.Close()
+			return
+		}
+
+		// Create audio track
+		audioTrack, err := webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{MimeType: "audio/opus", ClockRate: 48000, Channels: 2},
+			"audio",
+			"stream",
+		)
+		if err != nil {
+			log.Printf("Failed to create audio track: %v", err)
+			peerConnection.Close()
+			return
+		}
+
+		// Add tracks to peer connection
+		videoSender, err := peerConnection.AddTrack(videoTrack)
+		if err != nil {
+			log.Printf("Failed to add video track: %v", err)
+			peerConnection.Close()
+			return
+		}
+
+		audioSender, err := peerConnection.AddTrack(audioTrack)
+		if err != nil {
+			log.Printf("Failed to add audio track: %v", err)
+			peerConnection.Close()
+			return
+		}
+
+		// Read incoming RTCP packets from senders to prevent blocking
+		go func() {
+			rtcpBuf := make([]byte, 1500)
+			for {
+				if _, _, rtcpErr := videoSender.Read(rtcpBuf); rtcpErr != nil {
+					return
+				}
+			}
+		}()
+		go func() {
+			rtcpBuf := make([]byte, 1500)
+			for {
+				if _, _, rtcpErr := audioSender.Read(rtcpBuf); rtcpErr != nil {
+					return
+				}
+			}
+		}()
+
+		// Generate random sequence numbers
+		var videoSeq, audioSeq uint16
+		if err := binary.Read(rand.Reader, binary.LittleEndian, &videoSeq); err != nil {
+			log.Printf("Failed to generate video sequence number: %v", err)
+			peerConnection.Close()
+			return
+		}
+		if err := binary.Read(rand.Reader, binary.LittleEndian, &audioSeq); err != nil {
+			log.Printf("Failed to generate audio sequence number: %v", err)
+			peerConnection.Close()
+			return
+		}
+
+		client := &Client{
+			pc:         peerConnection,
+			videoTrack: videoTrack,
+			audioTrack: audioTrack,
+			videoSeq:   videoSeq,
+			audioSeq:   audioSeq,
+		}
+
+		// Store client
+		clientsMu.Lock()
+		clients[conn] = client
+		clientsMu.Unlock()
+
+		// Handle cleanup
+		defer func() {
+			clientsMu.Lock()
+			delete(clients, conn)
+			clientsMu.Unlock()
+			if err := peerConnection.Close(); err != nil {
+				log.Printf("Failed to close peer connection: %v", err)
+			}
+		}()
+
+		// Create offer
+		offer, err := peerConnection.CreateOffer(nil)
+		if err != nil {
+			log.Printf("Failed to create offer: %v", err)
+			return
+		}
+
+		// Set local description
+		if err = peerConnection.SetLocalDescription(offer); err != nil {
+			log.Printf("Failed to set local description: %v", err)
+			return
+		}
+
+		// Send offer
+		if err = conn.WriteJSON(offer); err != nil {
+			log.Printf("Failed to send offer: %v", err)
+			return
+		}
+
+		// Wait for answer
+		var answer webrtc.SessionDescription
+		if err = conn.ReadJSON(&answer); err != nil {
+			log.Printf("Failed to read answer: %v", err)
+			return
+		}
+
+		// Set remote description
+		if err = peerConnection.SetRemoteDescription(answer); err != nil {
+			log.Printf("Failed to set remote description: %v", err)
+			return
+		}
+
+		// Keep connection alive
+		select {}
+	})
+
+	log.Println("Server starting on :8080")
+	if err := http.ListenAndServe("127.0.0.1:8080", nil); err != nil {
+		log.Fatalf("Failed to start HTTP server: %v", err)
+	}
+}
+
+func startRTPListener(port int, mediaType string) error {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IP{127, 0, 0, 1}, Port: port})
+	if err != nil {
+		return fmt.Errorf("failed to listen on UDP port %d: %w", port, err)
+	}
+	defer conn.Close()
+
+	log.Printf("Listening for %s RTP on port %d", mediaType, port)
+
+	buffer := make([]byte, 1500)
+	for {
+		n, _, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			log.Printf("Failed to read from UDP: %v", err)
+			continue
+		}
+
+		var pkt rtp.Packet
+		if err := pkt.Unmarshal(buffer[:n]); err != nil {
+			log.Printf("Failed to unmarshal RTP packet: %v", err)
+			continue
+		}
+
+		clientsMu.Lock()
+		for ws, client := range clients {
+			var track *webrtc.TrackLocalStaticRTP
+			var seq *uint16
+
+			switch mediaType {
+			case "video":
+				track = client.videoTrack
+				seq = &client.videoSeq
+			case "audio":
+				track = client.audioTrack
+				seq = &client.audioSeq
+			default:
+				continue
+			}
+
+			newPkt := &rtp.Packet{
+				Header: rtp.Header{
+					Version:        2,
+					PayloadType:    pkt.PayloadType,
+					SequenceNumber: *seq,
+					Timestamp:      pkt.Timestamp,
+					SSRC:           pkt.SSRC,
+				},
+				Payload: pkt.Payload,
+			}
+
+			*seq++
+			if err := track.WriteRTP(newPkt); err != nil {
+				log.Printf("Failed to write RTP packet: %v", err)
+				ws.Close()
+				delete(clients, ws)
+				continue
+			}
+		}
+		clientsMu.Unlock()
+	}
 }
