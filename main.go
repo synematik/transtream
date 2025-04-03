@@ -1,300 +1,500 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/binary"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
-	"sync"
+	_ "net/http/pprof"
+	"os"
+	"strconv"
+	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/pion/rtp"
-	"github.com/pion/webrtc/v3"
+	"github.com/inlivedev/sfu"
+	"github.com/inlivedev/sfu/pkg/fakeclient"
+	"github.com/inlivedev/sfu/pkg/interceptors/voiceactivedetector"
+	"github.com/inlivedev/sfu/pkg/networkmonitor"
+	"github.com/pion/logging"
+	"github.com/pion/webrtc/v4"
+	"golang.org/x/net/websocket"
 )
 
-var (
-	upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-	clients   = make(map[*websocket.Conn]*Client)
-	clientsMu sync.Mutex
-)
-
-type Client struct {
-	pc         *webrtc.PeerConnection
-	videoTrack *webrtc.TrackLocalStaticRTP
-	audioTrack *webrtc.TrackLocalStaticRTP
-	videoSeq   uint16
-	audioSeq   uint16
+type Request struct {
+	Type string      `json:"type"`
+	Data interface{} `json:"data"`
 }
+
+type Respose struct {
+	Status bool        `json:"status"`
+	Type   string      `json:"type"`
+	Data   interface{} `json:"data"`
+}
+
+type VAD struct {
+	SSRC     uint32                                `json:"ssrc"`
+	TrackID  string                                `json:"track_id"`
+	StreamID string                                `json:"stream_id"`
+	Packets  []voiceactivedetector.VoicePacketData `json:"packets"`
+}
+
+type AvailableTrack struct {
+	ClientID   string `json:"client_id"`
+	ClientName string `json:"client_name"`
+	TrackID    string `json:"track_id"`
+	StreamID   string `json:"stream_id"`
+	Source     string `json:"source"`
+}
+
+const (
+	TypeOffer                = "offer"
+	TypeAnswer               = "answer"
+	TypeCandidate            = "candidate"
+	TypeNetworkCondition     = "network_condition"
+	TypeError                = "error"
+	TypeAllowRenegotiation   = "allow_renegotiation"
+	TypeIsAllowRenegotiation = "is_allow_renegotiation"
+	TypeTrackAdded           = "tracks_added"
+	TypeTracksAvailable      = "tracks_available"
+	TypeSubscribeTracks      = "subscribe_tracks"
+	TypeSwitchQuality        = "switch_quality"
+	TypeUpdateBandwidth      = "update_bandwidth"
+	TypeSetBandwidthLimit    = "set_bandwidth_limit"
+	TypeBitrateAdjusted      = "bitrate_adjusted"
+	TypeTrackStats           = "track_stats"
+	TypeVoiceDetected        = "voice_detected"
+)
+
+var logger logging.LeveledLogger
 
 func main() {
-	// Start RTP listeners for video and audio
-	go func() {
-		if err := startRTPListener(5000, "video"); err != nil {
-			log.Fatalf("Failed to start video RTP listener: %v", err)
-		}
-	}()
-	go func() {
-		if err := startRTPListener(5002, "audio"); err != nil {
-			log.Fatalf("Failed to start audio RTP listener: %v", err)
-		}
-	}()
+	_ = os.Setenv("logtostderr", "true")
+	os.Setenv("stderrthreshold", "TRACE")
 
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Printf("WebSocket upgrade failed: %v", err)
-			return
-		}
-		defer func() {
-			if err := conn.Close(); err != nil {
-				log.Printf("WebSocket close error: %v", err)
+	os.Setenv("PIONS_LOG_TRACE", "sfu,vad,bitratecontroller")
+	os.Setenv("PIONS_LOG_DEBUG", "sfu,vad,bitratecontroller")
+	os.Setenv("PIONS_LOG_INFO", "sfu,vad,bitratecontroller")
+	os.Setenv("PIONS_LOG_WARN", "sfu,vad,bitratecontroller")
+	os.Setenv("PIONS_LOG_ERROR", "sfu,vad,bitratecontroller")
+
+	logger = logging.NewDefaultLoggerFactory().NewLogger("sfu")
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	defer cancel()
+
+	sfuOpts := sfu.DefaultOptions()
+
+	sfuOpts.EnableBandwidthEstimator = true
+
+	fakeClientCount := 0
+
+	_, turnEnabled := os.LookupEnv("TURN_ENABLED")
+	if turnEnabled || fakeClientCount > 0 {
+		sfu.StartStunServer(ctx, "127.0.0.1")
+		sfuOpts.IceServers = append(sfuOpts.IceServers, webrtc.ICEServer{
+			URLs: []string{"stun:127.0.0.1:3478"},
+		})
+	}
+
+	// create room manager first before create new room
+	roomManager := sfu.NewManager(ctx, "server-name-here", sfuOpts)
+
+	// generate a new room id. You can extend this example into a multiple room by use this in it's own API endpoint
+	roomID := roomManager.CreateRoomID()
+	roomName := "test-room"
+
+	// create new room
+	roomsOpts := sfu.DefaultRoomOptions()
+	roomsOpts.Bitrates.InitialBandwidth = 1_000_000
+	// roomsOpts.PLIInterval = 3 * time.Second
+	defaultRoom, _ := roomManager.NewRoom(roomID, roomName, sfu.RoomTypeLocal, roomsOpts)
+	// turnServer := sfu.StartTurnServer(ctx, localIp.String())
+	// defer turnServer.Close()
+
+	iceServers := []webrtc.ICEServer{
+		{
+			URLs: []string{"stun:127.0.0.1:3478"},
+		},
+	}
+
+	for i := 0; i < fakeClientCount; i++ {
+		// create a fake client
+		fc := fakeclient.Create(ctx, roomManager.Log(), defaultRoom, iceServers, fmt.Sprintf("fake-client-%d", i), true)
+
+		fc.Client.OnTracksAdded(func(addedTracks []sfu.ITrack) {
+			setTracks := make(map[string]sfu.TrackType, 0)
+			for _, track := range addedTracks {
+				setTracks[track.ID()] = sfu.TrackTypeMedia
 			}
-		}()
+			fc.Client.SetTracksSourceType(setTracks)
+		})
+	}
 
-		// Create media engine with our codecs
-		mediaEngine := &webrtc.MediaEngine{}
-		if err := mediaEngine.RegisterCodec(
-			webrtc.RTPCodecParameters{
-				RTPCodecCapability: webrtc.RTPCodecCapability{
-					MimeType:  "video/H264",
-					ClockRate: 90000,
-				},
-				PayloadType: 96,
-			},
-			webrtc.RTPCodecTypeVideo,
-		); err != nil {
-			log.Printf("Failed to register video codec: %v", err)
-			return
+	fs := http.FileServer(http.Dir("./"))
+	http.Handle("/", fs)
+
+	http.Handle("/ws", websocket.Handler(func(conn *websocket.Conn) {
+		messageChan := make(chan Request)
+		isDebug := false
+		if conn.Request().URL.Query().Get("debug") != "" {
+			isDebug = true
 		}
+		go clientHandler(isDebug, conn, messageChan, defaultRoom)
+		reader(conn, messageChan)
+	}))
 
-		if err := mediaEngine.RegisterCodec(
-			webrtc.RTPCodecParameters{
-				RTPCodecCapability: webrtc.RTPCodecCapability{
-					MimeType:  "audio/opus",
-					ClockRate: 48000,
-					Channels:  2,
-				},
-				PayloadType: 111,
-			},
-			webrtc.RTPCodecTypeAudio,
-		); err != nil {
-			log.Printf("Failed to register audio codec: %v", err)
-			return
-		}
-
-		// Create API with media engine
-		api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
-		config := webrtc.Configuration{
-			ICEServers: []webrtc.ICEServer{
-				{
-					URLs: []string{"stun:stun.l.google.com:19302"},
-				},
-			},
-		}
-
-		peerConnection, err := api.NewPeerConnection(config)
-		if err != nil {
-			log.Printf("Failed to create peer connection: %v", err)
-			return
-		}
-
-		// Create video track
-		videoTrack, err := webrtc.NewTrackLocalStaticRTP(
-			webrtc.RTPCodecCapability{MimeType: "video/H264", ClockRate: 90000},
-			"video",
-			"stream",
-		)
-		if err != nil {
-			log.Printf("Failed to create video track: %v", err)
-			peerConnection.Close()
-			return
-		}
-
-		// Create audio track
-		audioTrack, err := webrtc.NewTrackLocalStaticRTP(
-			webrtc.RTPCodecCapability{MimeType: "audio/opus", ClockRate: 48000, Channels: 2},
-			"audio",
-			"stream",
-		)
-		if err != nil {
-			log.Printf("Failed to create audio track: %v", err)
-			peerConnection.Close()
-			return
-		}
-
-		// Add tracks to peer connection
-		videoSender, err := peerConnection.AddTrack(videoTrack)
-		if err != nil {
-			log.Printf("Failed to add video track: %v", err)
-			peerConnection.Close()
-			return
-		}
-
-		audioSender, err := peerConnection.AddTrack(audioTrack)
-		if err != nil {
-			log.Printf("Failed to add audio track: %v", err)
-			peerConnection.Close()
-			return
-		}
-
-		// Read incoming RTCP packets from senders to prevent blocking
-		go func() {
-			rtcpBuf := make([]byte, 1500)
-			for {
-				if _, _, rtcpErr := videoSender.Read(rtcpBuf); rtcpErr != nil {
-					return
-				}
-			}
-		}()
-		go func() {
-			rtcpBuf := make([]byte, 1500)
-			for {
-				if _, _, rtcpErr := audioSender.Read(rtcpBuf); rtcpErr != nil {
-					return
-				}
-			}
-		}()
-
-		// Generate random sequence numbers
-		var videoSeq, audioSeq uint16
-		if err := binary.Read(rand.Reader, binary.LittleEndian, &videoSeq); err != nil {
-			log.Printf("Failed to generate video sequence number: %v", err)
-			peerConnection.Close()
-			return
-		}
-		if err := binary.Read(rand.Reader, binary.LittleEndian, &audioSeq); err != nil {
-			log.Printf("Failed to generate audio sequence number: %v", err)
-			peerConnection.Close()
-			return
-		}
-
-		client := &Client{
-			pc:         peerConnection,
-			videoTrack: videoTrack,
-			audioTrack: audioTrack,
-			videoSeq:   videoSeq,
-			audioSeq:   audioSeq,
-		}
-
-		// Store client
-		clientsMu.Lock()
-		clients[conn] = client
-		clientsMu.Unlock()
-
-		// Handle cleanup
-		defer func() {
-			clientsMu.Lock()
-			delete(clients, conn)
-			clientsMu.Unlock()
-			if err := peerConnection.Close(); err != nil {
-				log.Printf("Failed to close peer connection: %v", err)
-			}
-		}()
-
-		// Create offer
-		offer, err := peerConnection.CreateOffer(nil)
-		if err != nil {
-			log.Printf("Failed to create offer: %v", err)
-			return
-		}
-
-		// Set local description
-		if err = peerConnection.SetLocalDescription(offer); err != nil {
-			log.Printf("Failed to set local description: %v", err)
-			return
-		}
-
-		// Send offer
-		if err = conn.WriteJSON(offer); err != nil {
-			log.Printf("Failed to send offer: %v", err)
-			return
-		}
-
-		// Wait for answer
-		var answer webrtc.SessionDescription
-		if err = conn.ReadJSON(&answer); err != nil {
-			log.Printf("Failed to read answer: %v", err)
-			return
-		}
-
-		// Set remote description
-		if err = peerConnection.SetRemoteDescription(answer); err != nil {
-			log.Printf("Failed to set remote description: %v", err)
-			return
-		}
-
-		// Keep connection alive
-		select {}
+	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		statsHandler(w, r, defaultRoom)
 	})
 
-	log.Println("Server starting on :8080")
-	if err := http.ListenAndServe("127.0.0.1:8080", nil); err != nil {
-		log.Fatalf("Failed to start HTTP server: %v", err)
+	logger.Info("Listening on http://localhost:8000 ...")
+
+	err := http.ListenAndServe(":8000", nil)
+	if err != nil {
+		log.Panic(err)
 	}
 }
 
-func startRTPListener(port int, mediaType string) error {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IP{127, 0, 0, 1}, Port: port})
-	if err != nil {
-		return fmt.Errorf("failed to listen on UDP port %d: %w", port, err)
-	}
-	defer conn.Close()
+func statsHandler(w http.ResponseWriter, r *http.Request, room *sfu.Room) {
+	stats := room.Stats()
 
-	log.Printf("Listening for %s RTP on port %d", mediaType, port)
+	statsJSON, _ := json.Marshal(stats)
 
-	buffer := make([]byte, 1500)
+	w.Header().Set("Content-Type", "application/json")
+
+	_, _ = w.Write([]byte(statsJSON))
+}
+
+func reader(conn *websocket.Conn, messageChan chan Request) {
+	ctx, cancel := context.WithCancel(conn.Request().Context())
+	defer cancel()
+
+MessageLoop:
 	for {
-		n, _, err := conn.ReadFromUDP(buffer)
-		if err != nil {
-			log.Printf("Failed to read from UDP: %v", err)
-			continue
+		select {
+		case <-ctx.Done():
+			break MessageLoop
+		default:
+			for {
+				decoder := json.NewDecoder(conn)
+				var req Request
+				err := decoder.Decode(&req)
+				if err != nil {
+					if err.Error() == "EOF" {
+						continue
+					}
+
+					logger.Infof("error decoding message", err)
+				}
+				messageChan <- req
+			}
+		}
+	}
+}
+
+func clientHandler(isDebug bool, conn *websocket.Conn, messageChan chan Request, r *sfu.Room) {
+	ctx, cancel := context.WithCancel(conn.Request().Context())
+	defer cancel()
+
+	// create new client id, you can pass a unique int value to this function
+	// or just use the SFU client counter
+	clientID := r.CreateClientID()
+
+	// add a new client to room
+	// you can also get the client by using r.GetClient(clientID)
+	opts := sfu.DefaultClientOptions()
+	opts.EnableOpusDTX = true
+	opts.EnableVoiceDetection = true
+	opts.ReorderPackets = false
+	client, err := r.AddClient(clientID, clientID, opts)
+	if err != nil {
+		log.Panic(err)
+		return
+	}
+
+	if isDebug {
+		client.EnableDebug()
+	}
+
+	defer r.StopClient(client.ID())
+
+	_, _ = conn.Write([]byte("{\"type\":\"clientid\",\"data\":\"" + clientID + "\"}"))
+
+	answerChan := make(chan webrtc.SessionDescription)
+
+	// client.SubscribeAllTracks()
+
+	client.OnTracksAdded(func(tracks []sfu.ITrack) {
+		tracksAdded := map[string]map[string]string{}
+		for _, track := range tracks {
+			tracksAdded[track.ID()] = map[string]string{"id": track.ID()}
+		}
+		resp := Respose{
+			Status: true,
+			Type:   TypeTrackAdded,
+			Data:   tracksAdded,
 		}
 
-		var pkt rtp.Packet
-		if err := pkt.Unmarshal(buffer[:n]); err != nil {
-			log.Printf("Failed to unmarshal RTP packet: %v", err)
-			continue
+		trackAddedResp, _ := json.Marshal(resp)
+
+		_, _ = conn.Write(trackAddedResp)
+	})
+
+	client.OnTracksAvailable(func(tracks []sfu.ITrack) {
+		if client.IsDebugEnabled() {
+			logger.Infof("tracks available", tracks)
+		}
+		tracksAvailable := map[string]map[string]interface{}{}
+		for _, track := range tracks {
+
+			tracksAvailable[track.ID()] = map[string]interface{}{
+				"id":           track.ID(),
+				"client_id":    track.ClientID(),
+				"source_type":  track.SourceType().String(),
+				"kind":         track.Kind().String(),
+				"is_simulcast": track.IsSimulcast(),
+			}
+		}
+		resp := Respose{
+			Status: true,
+			Type:   TypeTracksAvailable,
+			Data:   tracksAvailable,
 		}
 
-		clientsMu.Lock()
-		for ws, client := range clients {
-			var track *webrtc.TrackLocalStaticRTP
-			var seq *uint16
+		trackAddedResp, _ := json.Marshal(resp)
 
-			switch mediaType {
-			case "video":
-				track = client.videoTrack
-				seq = &client.videoSeq
-			case "audio":
-				track = client.audioTrack
-				seq = &client.audioSeq
-			default:
+		_, _ = conn.Write(trackAddedResp)
+	})
+
+	client.OnRenegotiation(func(ctx context.Context, offer webrtc.SessionDescription) (webrtc.SessionDescription, error) {
+		// SFU request a renegotiation, send the offer to client
+		logger.Infof("receive renegotiation offer from SFU")
+
+		resp := Respose{
+			Status: true,
+			Type:   TypeOffer,
+			Data:   offer,
+		}
+
+		sdpBytes, _ := json.Marshal(resp)
+
+		_, _ = conn.Write(sdpBytes)
+
+		// wait for answer from client
+		ctxTimeout, cancelTimeout := context.WithTimeout(client.Context(), 30*time.Second)
+
+		defer cancelTimeout()
+
+		// this will wait for answer from client in 30 seconds or timeout
+		select {
+		case <-ctxTimeout.Done():
+			logger.Errorf("timeout on renegotiation")
+			return webrtc.SessionDescription{}, errors.New("timeout on renegotiation")
+		case answer := <-answerChan:
+			logger.Infof("received answer from client ", client.Type(), client.ID())
+			return answer, nil
+		}
+	})
+
+	client.OnAllowedRemoteRenegotiation(func() {
+		// SFU allow a remote renegotiation
+		logger.Infof("receive allow remote renegotiation from SFU")
+
+		resp := Respose{
+			Status: true,
+			Type:   TypeAllowRenegotiation,
+			Data:   "ok",
+		}
+
+		respBytes, _ := json.Marshal(resp)
+
+		_, _ = conn.Write(respBytes)
+	})
+
+	type Bitrates struct {
+		Min         uint32 `json:"min"`
+		Max         uint32 `json:"max"`
+		TotalClient uint32 `json:"total_client"`
+	}
+
+	client.OnIceCandidate(func(ctx context.Context, candidate *webrtc.ICECandidate) {
+		// SFU send an ICE candidate to client
+		resp := Respose{
+			Status: true,
+			Type:   TypeCandidate,
+			Data:   candidate,
+		}
+		candidateBytes, _ := json.Marshal(resp)
+
+		_, _ = conn.Write(candidateBytes)
+	})
+
+	client.OnNetworkConditionChanged(func(condition networkmonitor.NetworkConditionType) {
+		resp := Respose{
+			Status: true,
+			Type:   TypeNetworkCondition,
+			Data:   condition,
+		}
+		respBytes, _ := json.Marshal(resp)
+
+		_, _ = conn.Write(respBytes)
+	})
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stats := client.Stats()
+
+			resp := Respose{
+				Status: true,
+				Type:   TypeTrackStats,
+				Data:   stats,
+			}
+
+			respBytes, _ := json.Marshal(resp)
+			_, _ = conn.Write(respBytes)
+
+		case req := <-messageChan:
+			// handle as SDP if no error
+			if req.Type == TypeOffer || req.Type == TypeAnswer {
+				var resp Respose
+
+				sdp, _ := req.Data.(string)
+
+				if req.Type == TypeOffer {
+					// handle as offer SDP
+					answer, err := client.Negotiate(webrtc.SessionDescription{SDP: sdp, Type: webrtc.SDPTypeOffer})
+					if err != nil {
+						logger.Errorf("error on negotiate", err)
+
+						resp = Respose{
+							Status: false,
+							Type:   TypeError,
+							Data:   err.Error(),
+						}
+					} else {
+						// send the answer to client
+						resp = Respose{
+							Status: true,
+							Type:   TypeAnswer,
+							Data:   answer,
+						}
+					}
+
+					respBytes, _ := json.Marshal(resp)
+
+					conn.Write(respBytes)
+				} else {
+					logger.Infof("receive renegotiation answer from client")
+					// handle as answer SDP as part of renegotiation request from SFU
+					// pass the answer to onRenegotiation handler above
+					answerChan <- webrtc.SessionDescription{SDP: sdp, Type: webrtc.SDPTypeAnswer}
+				}
+
+				// don't continue execution
 				continue
-			}
+			} else if req.Type == TypeCandidate {
+				candidate := webrtc.ICECandidateInit{
+					Candidate: req.Data.(string),
+				}
+				err := client.AddICECandidate(candidate)
+				if err != nil {
+					log.Panic("error on add ice candidate", err)
+				}
+			} else if req.Type == TypeTrackAdded {
+				setTracks := make(map[string]sfu.TrackType, 0)
+				for id, trackType := range req.Data.(map[string]interface{}) {
+					if trackType.(string) == "media" {
+						setTracks[id] = sfu.TrackTypeMedia
+					} else {
+						setTracks[id] = sfu.TrackTypeScreen
+					}
+				}
+				client.SetTracksSourceType(setTracks)
+			} else if req.Type == TypeSubscribeTracks {
+				subTracks := make([]sfu.SubscribeTrackRequest, 0)
+				tracks, ok := req.Data.([]interface{})
+				if ok {
+					for _, track := range tracks {
+						trackData, ok := track.(map[string]interface{})
+						if ok {
+							subTrack := sfu.SubscribeTrackRequest{
+								ClientID: trackData["client_id"].(string),
+								TrackID:  trackData["track_id"].(string),
+							}
 
-			newPkt := &rtp.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					PayloadType:    pkt.PayloadType,
-					SequenceNumber: *seq,
-					Timestamp:      pkt.Timestamp,
-					SSRC:           pkt.SSRC,
-				},
-				Payload: pkt.Payload,
-			}
+							subTracks = append(subTracks, subTrack)
+						}
+					}
 
-			*seq++
-			if err := track.WriteRTP(newPkt); err != nil {
-				log.Printf("Failed to write RTP packet: %v", err)
-				ws.Close()
-				delete(clients, ws)
-				continue
+					if err := client.SubscribeTracks(subTracks); err != nil {
+						logger.Errorf("error on subscribe tracks", err)
+					}
+				} else {
+					logger.Errorf("error on subscribe tracks wrong data format ", req.Data)
+				}
+
+			} else if req.Type == TypeSwitchQuality {
+				quality := req.Data.(string)
+				switch quality {
+				case "low":
+					log.Println("switch to low quality")
+					client.SetQuality(sfu.QualityLow)
+				case "lowmid":
+					log.Println("switch to low mid quality")
+					client.SetQuality(sfu.QualityLowMid)
+				case "lowlow":
+					log.Println("switch to low low quality")
+					client.SetQuality(sfu.QualityLowLow)
+				case "mid":
+					log.Println("switch to mid quality")
+					client.SetQuality(sfu.QualityMid)
+				case "midmid":
+					log.Println("switch to mid mid quality")
+					client.SetQuality(sfu.QualityMidMid)
+				case "midlow":
+					log.Println("switch to mid low quality")
+					client.SetQuality(sfu.QualityMidLow)
+				case "high":
+					log.Println("switch to high quality")
+					client.SetQuality(sfu.QualityHigh)
+				case "highmid":
+					log.Println("switch to high mid quality")
+					client.SetQuality(sfu.QualityHighMid)
+				case "highlow":
+					log.Println("switch to high low quality")
+					client.SetQuality(sfu.QualityHighLow)
+				case "none":
+					log.Println("switch to high quality")
+					client.SetQuality(sfu.QualityNone)
+				}
+			} else if req.Type == TypeUpdateBandwidth {
+				bandwidth := uint32(req.Data.(float64))
+				client.UpdatePublisherBandwidth(bandwidth)
+			} else if req.Type == TypeSetBandwidthLimit {
+				bandwidth, _ := strconv.ParseUint(req.Data.(string), 10, 32)
+				client.SetReceivingBandwidthLimit(uint32(bandwidth))
+			} else if req.Type == TypeIsAllowRenegotiation {
+				resp := Respose{
+					Status: true,
+					Type:   TypeAllowRenegotiation,
+					Data:   client.IsAllowNegotiation(),
+				}
+
+				respBytes, _ := json.Marshal(resp)
+
+				conn.Write(respBytes)
+
+			} else {
+				logger.Errorf("unknown message type", req)
 			}
 		}
-		clientsMu.Unlock()
 	}
 }
